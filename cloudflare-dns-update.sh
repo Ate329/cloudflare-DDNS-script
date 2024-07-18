@@ -4,7 +4,12 @@ set -euo pipefail
 
 ### Function to log messages
 log() {
-    echo "$(date "+%Y-%m-%d %H:%M:%S") $1" | tee -a "$LOG_FILE"
+    echo "$(date "+%Y-%m-%d %H:%M:%S") $1" | tee -a "$LOG_FILE" >&2
+}
+
+### Function to log messages only to the log file
+log_to_file() {
+    echo "$(date "+%Y-%m-%d %H:%M:%S") $1" >> "$LOG_FILE"
 }
 
 ### Create log file
@@ -15,7 +20,7 @@ touch "$LOG_FILE"
 log "==> Script started"
 
 ### Validate config file
-config_file="${1:-${parent_path}/cloudflare-dns-update.conf}"
+config_file="${1:-${parent_path}/cloudflare-dns-update_test.conf}"
 if ! source "$config_file"; then
     log "Error! Missing configuration file $config_file or invalid syntax!"
     exit 1
@@ -40,22 +45,25 @@ readonly IPV6_REGEX='^([0-9a-fA-F]{0,4}:){1,7}[0-9a-fA-F]{0,4}$'
 get_external_ip() {
     local ip_type=$1
     local sources=()
+    local regex
 
     case "$ip_type" in
         ipv4)
             sources=("https://api.ipify.org" "https://checkip.amazonaws.com" "https://ifconfig.me/ip")
+            regex="$IPV4_REGEX"
             ;;
         ipv6)
             sources=("https://api64.ipify.org" "https://ifconfig.co/ip")
+            regex="$IPV6_REGEX"
             ;;
         *)
-            log "Error! Invalid IP type specified"
+            log "Error! Invalid IP type specified: $ip_type"
             return 1
             ;;
     esac
 
     for source in "${sources[@]}"; do
-        if ip=$(curl -"${ip_type:3:1}" -s "$source" --max-time 10) && [[ "$ip" =~ ${!ip_type^}_REGEX ]]; then
+        if ip=$(curl -"${ip_type:3:1}" -s "$source" --max-time 10) && [[ "$ip" =~ $regex ]]; then
             echo "$ip"
             return 0
         fi
@@ -66,8 +74,8 @@ get_external_ip() {
 }
 
 ### Get external IPs
-ipv4=$(get_external_ip "ipv4") || true
-ipv6=$(get_external_ip "ipv6") || true
+ipv4=$(get_external_ip "ipv4") || ipv4=""
+ipv6=$(get_external_ip "ipv6") || ipv6=""
 
 [ -n "$ipv4" ] && log "==> External IPv4 is: $ipv4"
 [ -n "$ipv6" ] && log "==> External IPv6 is: $ipv6"
@@ -89,6 +97,8 @@ update_dns_record() {
     cloudflare_record_info=$(curl -s -X GET "https://api.cloudflare.com/client/v4/zones/$zoneid/dns_records?type=$type&name=$record" \
         -H "Authorization: Bearer $cloudflare_zone_api_token" \
         -H "Content-Type: application/json")
+
+    log_to_file "Cloudflare API response: $cloudflare_record_info" # Log the API response to file for debugging
 
     if [[ $cloudflare_record_info == *"\"success\":false"* ]]; then
         log "Error! Can't get $record ($type) record information from Cloudflare API"
@@ -114,13 +124,10 @@ update_dns_record() {
     cloudflare_dns_record_id=$(echo "$cloudflare_record_info" | json_extract "id")
 
     # Push new DNS record information to Cloudflare API
-    local update_dns_record
-    update_dns_record=$(curl -s -X PUT "https://api.cloudflare.com/client/v4/zones/$zoneid/dns_records/$cloudflare_dns_record_id" \
+    if ! curl -s -X PUT "https://api.cloudflare.com/client/v4/zones/$zoneid/dns_records/$cloudflare_dns_record_id" \
         -H "Authorization: Bearer $cloudflare_zone_api_token" \
         -H "Content-Type: application/json" \
-        --data "{\"type\":\"$type\",\"name\":\"$record\",\"content\":\"$ip\",\"ttl\":$ttl,\"proxied\":$proxied}")
-
-    if [[ $update_dns_record == *"\"success\":false"* ]]; then
+        --data "{\"type\":\"$type\",\"name\":\"$record\",\"content\":\"$ip\",\"ttl\":$ttl,\"proxied\":$proxied}" | grep -q '"success":true'; then
         log "Error! Update failed for $record ($type)"
         return 1
     fi
@@ -129,7 +136,7 @@ update_dns_record() {
     log "==> $record DNS $type Record updated to: $ip, ttl: $ttl, proxied: $proxied"
 
     # Telegram notification
-    if [ "${notify_me_telegram}" == "yes" ]; then
+    if [ "${notify_me_telegram:-no}" == "yes" ]; then
         send_telegram_notification "$record" "$type" "$ip"
     fi
 }
@@ -140,13 +147,9 @@ send_telegram_notification() {
     local type=$2
     local ip=$3
 
-    local telegram_notification
-    telegram_notification=$(
-        curl -s -X POST "https://api.telegram.org/bot${telegram_bot_API_Token}/sendMessage" \
-            -H "Content-Type: application/json" \
-            --data "{\"chat_id\":\"${telegram_chat_id}\",\"text\":\"${record} DNS ${type} record updated to: ${ip}\"}"
-    )
-    if [[ $telegram_notification != *"\"ok\":true"* ]]; then
+    if ! curl -s -X POST "https://api.telegram.org/bot${telegram_bot_API_Token}/sendMessage" \
+        -H "Content-Type: application/json" \
+        --data "{\"chat_id\":\"${telegram_chat_id}\",\"text\":\"${record} DNS ${type} record updated to: ${ip}\"}" | grep -q '"ok":true'; then
         log "Error! Telegram notification failed for $record ($type)"
     fi
 }
