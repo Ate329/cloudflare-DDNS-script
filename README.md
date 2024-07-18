@@ -50,6 +50,10 @@ telegram_chat_id="your_telegram_chat_id"  # If using Telegram notifications
 
 Replace the placeholder values with your actual Cloudflare and Telegram (if used) credentials.
 
+This is where you can get your API Tokens: https://dash.cloudflare.com/profile/api-tokens   
+***You should get the API Tokens by clicking the "Create Token" button instead of the API Keys.   
+(API Tokens and keys are DIFFERENT)***
+
 ## Usage
 
 Run the script manually:
