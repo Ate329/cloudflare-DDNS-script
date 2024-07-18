@@ -100,7 +100,7 @@ Example:
   };
 ```
 
-And you might need to install cron:
+And you might need to install cron as well:
 ```nix
   environment.systemPackages = [
     pkgs.cron
@@ -127,4 +127,5 @@ This script is provided as-is, without any warranties. Always test thoroughly be
 
 - Thanks to Cloudflare for providing a robust API.
 - Thanks to various public IP services for enabling reliable IP address retrieval.
+- Thanks to ChatGPT for generating this README as well.
 - Motivated by [DDNS-Cloudflare-Bash](https://github.com/fire1ce/DDNS-Cloudflare-Bash)
