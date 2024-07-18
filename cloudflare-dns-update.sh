@@ -20,7 +20,7 @@ touch "$LOG_FILE"
 log "==> Script started"
 
 ### Validate config file
-config_file="${1:-${parent_path}/cloudflare-dns-update_test.conf}"
+config_file="${1:-${parent_path}/cloudflare-dns-update.conf}"
 if ! source "$config_file"; then
     log "Error! Missing configuration file $config_file or invalid syntax!"
     exit 1
