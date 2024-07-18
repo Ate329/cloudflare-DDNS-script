@@ -7,14 +7,14 @@ log() {
     echo "$(date "+%Y-%m-%d %H:%M:%S") $1" | tee -a "$LOG_FILE"
 }
 
-### Create cloudflare-dns-update.log file of the last run for debug
+### Create log file
 parent_path="$(dirname "${BASH_SOURCE[0]}")"
 LOG_FILE="${parent_path}/cloudflare-dns-update.log"
 touch "$LOG_FILE"
 
 log "==> Script started"
 
-### Validate if config-file exists
+### Validate config file
 config_file="${1:-${parent_path}/cloudflare-dns-update.conf}"
 if ! source "$config_file"; then
     log "Error! Missing configuration file $config_file or invalid syntax!"
@@ -33,8 +33,8 @@ if [[ "$proxied" != "false" && "$proxied" != "true" ]]; then
 fi
 
 ### Valid IPv4 and IPv6 Regex
-IPV4_REGEX='^([0-9]{1,3}\.){3}[0-9]{1,3}$'
-IPV6_REGEX='^([0-9a-fA-F]{0,4}:){1,7}[0-9a-fA-F]{0,4}$'
+readonly IPV4_REGEX='^([0-9]{1,3}\.){3}[0-9]{1,3}$'
+readonly IPV6_REGEX='^([0-9a-fA-F]{0,4}:){1,7}[0-9a-fA-F]{0,4}$'
 
 ### Function to get external IP (IPv4 or IPv6)
 get_external_ip() {
@@ -55,12 +55,9 @@ get_external_ip() {
     esac
 
     for source in "${sources[@]}"; do
-        local ip
-        if ip=$(curl -"${ip_type:3:1}" -s "$source" --max-time 10); then
-            if [[ "$ip" =~ ${!ip_type^}_REGEX ]]; then
-                echo "$ip"
-                return 0
-            fi
+        if ip=$(curl -"${ip_type:3:1}" -s "$source" --max-time 10) && [[ "$ip" =~ ${!ip_type^}_REGEX ]]; then
+            echo "$ip"
+            return 0
         fi
     done
 
@@ -133,15 +130,24 @@ update_dns_record() {
 
     # Telegram notification
     if [ "${notify_me_telegram}" == "yes" ]; then
-        local telegram_notification
-        telegram_notification=$(
-            curl -s -X POST "https://api.telegram.org/bot${telegram_bot_API_Token}/sendMessage" \
-                -H "Content-Type: application/json" \
-                --data "{\"chat_id\":\"${telegram_chat_id}\",\"text\":\"${record} DNS ${type} record updated to: ${ip}\"}"
-        )
-        if [[ $telegram_notification != *"\"ok\":true"* ]]; then
-            log "Error! Telegram notification failed for $record ($type)"
-        fi
+        send_telegram_notification "$record" "$type" "$ip"
+    fi
+}
+
+### Function to send Telegram notification
+send_telegram_notification() {
+    local record=$1
+    local type=$2
+    local ip=$3
+
+    local telegram_notification
+    telegram_notification=$(
+        curl -s -X POST "https://api.telegram.org/bot${telegram_bot_API_Token}/sendMessage" \
+            -H "Content-Type: application/json" \
+            --data "{\"chat_id\":\"${telegram_chat_id}\",\"text\":\"${record} DNS ${type} record updated to: ${ip}\"}"
+    )
+    if [[ $telegram_notification != *"\"ok\":true"* ]]; then
+        log "Error! Telegram notification failed for $record ($type)"
     fi
 }
 
