@@ -22,7 +22,7 @@ cloudflare-DDNS-script is a Bash script that automatically updates Cloudflare DN
 
 1. Clone this repository:
    ```bash
-   git clone https://github.com/yourusername/cloudflare-DDNS-script.git
+   git clone https://github.com/Ate329/cloudflare-DDNS-script.git
    cd cloudflare-DDNS-script
    ```
 
