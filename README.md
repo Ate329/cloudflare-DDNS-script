@@ -72,7 +72,9 @@ And add the following:
 
 ### For NixOS
 
-It's a better idea to do this declaratively in NixOS:
+It's a better idea to do this declaratively in NixOS.
+
+In your configuration.nix (the default configuration file for NixOS):
 ```nix
   services.cron = {
     enable = true;
