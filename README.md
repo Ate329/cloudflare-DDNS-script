@@ -21,13 +21,13 @@ A robust Bash script to automatically update Cloudflare DNS records with your cu
 ## Installation
 
 1. Clone this repository:
-   ```
+   ```bash
    git clone https://github.com/yourusername/cloudflare-DDNS-script.git
    cd cloudflare-DDNS-script
    ```
 
 2. Make the script executable:
-   ```
+   ```bash
    chmod +x cloudflare-dns-update.sh
    ```
 
@@ -54,26 +54,26 @@ Replace the placeholder values with your actual Cloudflare and Telegram (if used
 
 Run the script manually:
 
-```
+```bash
 ./cloudflare-dns-update.sh
 ```
 
 For automatic updates, you can set up a cron job. For example, to run the script every 5 minutes:
 
 Run the command:
-```
+```bash
 crontab -e
 ```
 
 And add the following:
-```
+```bash
 */5 * * * * /path/to/cloudflare-dns-update.sh
 ```
 
 ### For NixOS
 
 It's a better idea to do this declaratively in NixOS:
-```
+```nix
   services.cron = {
     enable = true;
     systemCronJobs = [
@@ -84,7 +84,7 @@ It's a better idea to do this declaratively in NixOS:
 ```
 
 Example:
-```
+```nix
   services.cron = {
     enable = true;
     systemCronJobs = [
@@ -95,7 +95,7 @@ Example:
 ```
 
 And you might need to install cron:
-```
+```nix
   environment.systemPackages = [
     pkgs.cron
   ];
