@@ -9,7 +9,7 @@ cloudflare-DDNS-script is a Bash script that automatically updates Cloudflare DN
 - Uses multiple sources to reliably fetch public IP addresses
 - Configurable Time To Live (TTL) and proxy settings
 - Optional Telegram notifications for successful updates
-- Detailed logging for easy troubleshooting
+- Detailed logging for easy troubleshooting (including API responses)
 
 ## Prerequisites
 
