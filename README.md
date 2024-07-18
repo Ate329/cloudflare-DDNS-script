@@ -1,6 +1,6 @@
-# Cloudflare DDNS Script
+# cloudflare DDNS Script
 
-A robust Bash script to automatically update Cloudflare DNS records with your current public IPv4 and IPv6 addresses.
+cloudflare-DDNS-script is a Bash script that automatically updates Cloudflare DNS records with your current external IP address. It supports both IPv4 and IPv6, and can update multiple domains simultaneously. This script is particularly useful for any user who has a dynamic IP address and wants to keep their Cloudflare DNS records up to date without having an additional DDNS provider.
 
 ## Features
 
