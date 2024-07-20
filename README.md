@@ -107,6 +107,8 @@ And you might need to install cron as well:
   ];
 ```
 
+Tested on my raspberrypi 4 with NixOS installed and it was working perfectly.
+
 ## Logging
 
 The script creates a log file named `cloudflare-dns-update.log` in the same directory. This log file contains information about each run of the script, including any errors encountered.
