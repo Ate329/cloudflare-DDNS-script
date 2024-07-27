@@ -31,7 +31,7 @@ cloudflare-DDNS-script is a Bash script that automatically updates Cloudflare DN
    chmod +x cloudflare-dns-update.sh
    ```
 
-3. Create a configuration file named `cloudflare-dns-update.conf` in the same directory as the script (see Configuration section below).
+3. Change the configurations in the configuration file named `cloudflare-dns-update.conf` in the same directory as the script based on your needs (see Configuration section below).
 
 ## Configuration
 
