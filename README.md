@@ -69,7 +69,7 @@ Run the command:
 crontab -e
 ```
 
-And add the following:
+And add the following (it means running the config once per 5 minutes):
 ```bash
 */5 * * * * /path/to/cloudflare-dns-update.sh
 ```
