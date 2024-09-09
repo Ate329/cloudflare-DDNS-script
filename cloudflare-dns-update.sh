@@ -37,6 +37,17 @@ if [[ "$proxied" != "false" && "$proxied" != "true" ]]; then
     exit 1
 fi
 
+# Check if IPv6 is enabled
+ipv6_enabled=$([ "$enable_ipv6" == "yes" ] && echo true || echo false)
+
+# Determine which DNS records to use for IPv6
+if [ "$ipv6_enabled" = true ] && [ "$use_same_record_for_ipv6" == "yes" ]; then
+    dns_record_ipv6="$dns_record"
+elif [ "$ipv6_enabled" = true ] && [ -z "$dns_record_ipv6" ]; then
+    log "Error! IPv6 is enabled but no IPv6 DNS records specified."
+    exit 1
+fi
+
 ### Valid IPv4 and IPv6 Regex
 readonly IPV4_REGEX='^([0-9]{1,3}\.){3}[0-9]{1,3}$'
 readonly IPV6_REGEX='^([0-9a-fA-F]{0,4}:){1,7}[0-9a-fA-F]{0,4}$'
@@ -75,10 +86,10 @@ get_external_ip() {
 
 ### Get external IPs
 ipv4=$(get_external_ip "ipv4") || ipv4=""
-ipv6=$(get_external_ip "ipv6") || ipv6=""
+[ "$ipv6_enabled" = true ] && ipv6=$(get_external_ip "ipv6") || ipv6=""
 
 [ -n "$ipv4" ] && log "==> External IPv4 is: $ipv4"
-[ -n "$ipv6" ] && log "==> External IPv6 is: $ipv6"
+[ "$ipv6_enabled" = true ] && [ -n "$ipv6" ] && log "==> External IPv6 is: $ipv6"
 
 ### Function to extract value from JSON
 json_extract() {
@@ -158,7 +169,13 @@ send_telegram_notification() {
 IFS=',' read -ra dns_records <<< "$dns_record"
 for record in "${dns_records[@]}"; do
     [ -n "$ipv4" ] && update_dns_record "$record" "$ipv4" "A"
-    [ -n "$ipv6" ] && update_dns_record "$record" "$ipv6" "AAAA"
 done
+
+if [ "$ipv6_enabled" = true ]; then
+    IFS=',' read -ra dns_records_ipv6 <<< "$dns_record_ipv6"
+    for record in "${dns_records_ipv6[@]}"; do
+        [ -n "$ipv6" ] && update_dns_record "$record" "$ipv6" "AAAA"
+    done
+fi
 
 log "==> Script finished"
