@@ -31,7 +31,7 @@ cloudflare-DDNS-script is a Bash script that automatically updates Cloudflare DN
    chmod +x cloudflare-dns-update.sh
    ```
 
-3. Create a configuration file named `cloudflare-dns-update.conf` in the same directory as the script (see Configuration section below).
+3. Change the configurations in the configuration file named `cloudflare-dns-update.conf` in the same directory as the script based on your needs (see Configuration section below).
 
 ## Configuration
 
@@ -69,7 +69,7 @@ Run the command:
 crontab -e
 ```
 
-And add the following:
+And add the following (it means running the config once per 5 minutes):
 ```bash
 */5 * * * * /path/to/cloudflare-dns-update.sh
 ```
@@ -100,12 +100,14 @@ Example:
   };
 ```
 
-And you might need to install cron:
+And you might need to install cron as well:
 ```nix
   environment.systemPackages = [
     pkgs.cron
   ];
 ```
+
+Tested on my raspberrypi 4 with NixOS installed and it was working perfectly.
 
 ## Logging
 
@@ -127,4 +129,5 @@ This script is provided as-is, without any warranties. Always test thoroughly be
 
 - Thanks to Cloudflare for providing a robust API.
 - Thanks to various public IP services for enabling reliable IP address retrieval.
+- Thanks to ChatGPT for generating this README as well.
 - Motivated by [DDNS-Cloudflare-Bash](https://github.com/fire1ce/DDNS-Cloudflare-Bash)
