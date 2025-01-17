@@ -389,29 +389,16 @@ fi
 
 # Check if update.sh will be modified
 if git diff --name-only HEAD..origin/main | grep -q "^update.sh$"; then
-    UPDATE_SCRIPT_CHANGED=1
-else
-    UPDATE_SCRIPT_CHANGED=0
-fi
-
-if [ $UPDATE_SCRIPT_CHANGED -eq 1 ]; then
     log_info "Update script needs updating. Updating it first..."
-    # Temporarily save the update script
-    cp -p update.sh update.sh.updating
-    add_temp_file "update.sh.updating"
     
     # Pull only the update script
     if ! git checkout origin/main -- update.sh; then
         log_error "Failed to update the script"
-        mv update.sh.updating update.sh
-        restore_stashed_changes
         exit 1
     fi
     
     if ! verify_file update.sh; then
         log_error "New update script is invalid"
-        mv update.sh.updating update.sh
-        restore_stashed_changes
         exit 1
     fi
     
@@ -484,23 +471,6 @@ if ! verify_file update.sh || ! verify_file cloudflare-dns-update.sh; then
     log_error "Script files are invalid after update"
     restore_from_backup "$BACKUP_DIR"
     exit 1
-fi
-
-# If update.sh itself was modified, notify user to run again
-if ! cmp -s "$BACKUP_DIR/update.sh" ./update.sh; then
-    log_warn "The update script itself has been modified."
-    log_warn "Please run the update script again to ensure all changes are applied correctly."
-    log_info "Your previous version has been backed up to: $BACKUP_DIR/update.sh"
-    
-    # Make sure the new update script is executable
-    chmod +x ./update.sh
-    
-    # Verify the new update script is valid
-    if ! verify_file update.sh; then
-        log_error "New update script is invalid"
-        restore_from_backup "$BACKUP_DIR"
-        exit 1
-    fi
 fi
 
 # Pop stashed changes if any
