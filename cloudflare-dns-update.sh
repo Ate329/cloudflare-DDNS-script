@@ -2,6 +2,109 @@
 
 set -euo pipefail
 
+# Check for required commands
+if ! command -v curl &> /dev/null; then
+    echo "Error! curl command not found. Please install curl first."
+    exit 1
+fi
+
+### Function to show usage/help
+show_help() {
+    cat << EOF
+Usage: $(basename "$0") [OPTIONS]
+
+Options:
+    -c, --config FILE         Use specified config file
+    -d, --domains STRING      Override domain configs (format: "zoneid1:domain1.com,domain2.com;zoneid2:domain3.com")
+    -t, --token STRING       Override Cloudflare API token
+    -6, --ipv6 yes/no        Enable/disable IPv6 support
+    -p, --proxy true/false   Enable/disable Cloudflare proxy
+    -l, --ttl NUMBER         Set TTL (1 or 120-7200)
+    --backup                 Backup current DNS records
+    --restore FILE           Restore DNS records from backup file
+    -h, --help              Show this help message
+EOF
+    exit 0
+}
+
+### Parse command line arguments
+TEMP=$(getopt -o 'hc:d:t:6:p:l:' --long 'help,config:,domains:,token:,ipv6:,proxy:,ttl:,backup,restore:' -n "$(basename "$0")" -- "$@")
+
+if [ $? -ne 0 ]; then
+    echo 'Terminating...' >&2
+    exit 1
+fi
+
+# Note the quotes around "$TEMP": they are essential!
+eval set -- "$TEMP"
+unset TEMP
+
+# Initialize variables for overrides
+config_override=""
+domains_override=""
+token_override=""
+ipv6_override=""
+proxy_override=""
+ttl_override=""
+do_backup=false
+restore_file=""
+
+while true; do
+    case "$1" in
+        '-h'|'--help')
+            show_help
+            ;;
+        '-c'|'--config')
+            config_override="$2"
+            shift 2
+            continue
+            ;;
+        '-d'|'--domains')
+            domains_override="$2"
+            shift 2
+            continue
+            ;;
+        '-t'|'--token')
+            token_override="$2"
+            shift 2
+            continue
+            ;;
+        '-6'|'--ipv6')
+            ipv6_override="$2"
+            shift 2
+            continue
+            ;;
+        '-p'|'--proxy')
+            proxy_override="$2"
+            shift 2
+            continue
+            ;;
+        '-l'|'--ttl')
+            ttl_override="$2"
+            shift 2
+            continue
+            ;;
+        '--backup')
+            do_backup=true
+            shift
+            continue
+            ;;
+        '--restore')
+            restore_file="$2"
+            shift 2
+            continue
+            ;;
+        '--')
+            shift
+            break
+            ;;
+        *)
+            echo 'Internal error!' >&2
+            exit 1
+            ;;
+    esac
+done
+
 ### Function to log messages
 log() {
     echo "$(date "+%Y-%m-%d %H:%M:%S") $1" | tee -a "$LOG_FILE" >&2
@@ -43,6 +146,117 @@ cleanup_logs() {
     fi
 }
 
+### Function to backup DNS records
+backup_dns_records() {
+    local backup_file="${parent_path}/dns_backup_$(date +%Y%m%d_%H%M%S).json"
+    local temp_file
+    temp_file=$(mktemp)
+    local success=true
+
+    log "==> Starting DNS records backup..."
+    echo "{" > "$temp_file"
+    echo "  \"backup_date\": \"$(date -u +"%Y-%m-%dT%H:%M:%SZ")\"," >> "$temp_file"
+    echo "  \"zones\": {" >> "$temp_file"
+
+    # Process each zone
+    IFS=';' read -ra zone_configs <<< "$domain_configs"
+    local first_zone=true
+    for zone_config in "${zone_configs[@]}"; do
+        # Split zone ID and domains
+        IFS=':' read -r zoneid _ <<< "$zone_config"
+        
+        [ "$first_zone" = true ] || echo "," >> "$temp_file"
+        first_zone=false
+        
+        # Get all DNS records for the zone
+        local zone_records
+        if ! zone_records=$(curl -s -X GET "https://api.cloudflare.com/client/v4/zones/$zoneid/dns_records" \
+            -H "Authorization: Bearer $cloudflare_zone_api_token" \
+            -H "Content-Type: application/json"); then
+            log "Error! Failed to get DNS records for zone $zoneid"
+            success=false
+            continue
+        fi
+
+        # Add zone records to backup file
+        echo "    \"$zoneid\": $zone_records" >> "$temp_file"
+    done
+
+    echo "  }" >> "$temp_file"
+    echo "}" >> "$temp_file"
+
+    if [ "$success" = true ]; then
+        mv "$temp_file" "$backup_file"
+        log "==> DNS records backed up to: $backup_file"
+    else
+        rm "$temp_file"
+        log "Error! Backup failed"
+        return 1
+    fi
+}
+
+### Function to restore DNS records
+restore_dns_records() {
+    local backup_file="$1"
+    local success=true
+
+    if [ ! -f "$backup_file" ]; then
+        log "Error! Backup file not found: $backup_file"
+        return 1
+    fi
+
+    log "==> Starting DNS records restore from: $backup_file"
+
+    # Read backup file
+    local zones
+    zones=$(jq -r '.zones | keys[]' "$backup_file")
+
+    for zoneid in $zones; do
+        log "==> Processing zone: $zoneid"
+        
+        # Get records for this zone
+        local records
+        records=$(jq -r ".zones[\"$zoneid\"].result[]" "$backup_file")
+
+        # Process each record
+        while IFS= read -r record; do
+            [ -z "$record" ] && continue
+
+            local record_id
+            local record_type
+            local record_name
+            local record_content
+            local record_proxied
+            local record_ttl
+
+            record_id=$(echo "$record" | jq -r '.id')
+            record_type=$(echo "$record" | jq -r '.type')
+            record_name=$(echo "$record" | jq -r '.name')
+            record_content=$(echo "$record" | jq -r '.content')
+            record_proxied=$(echo "$record" | jq -r '.proxied')
+            record_ttl=$(echo "$record" | jq -r '.ttl')
+
+            # Create/Update record
+            if ! curl -s -X PUT "https://api.cloudflare.com/client/v4/zones/$zoneid/dns_records/$record_id" \
+                -H "Authorization: Bearer $cloudflare_zone_api_token" \
+                -H "Content-Type: application/json" \
+                --data "{\"type\":\"$record_type\",\"name\":\"$record_name\",\"content\":\"$record_content\",\"ttl\":$record_ttl,\"proxied\":$record_proxied}" | grep -q '"success":true'; then
+                log "Error! Failed to restore record: $record_name ($record_type)"
+                success=false
+            else
+                log "==> Restored record: $record_name ($record_type)"
+            fi
+        done <<< "$records"
+    done
+
+    if [ "$success" = true ]; then
+        log "==> DNS records restored successfully"
+    else
+        log "Warning! Some records failed to restore"
+        return 1
+    fi
+}
+
 ### Create log file
 parent_path="$(dirname "${BASH_SOURCE[0]}")"
 LOG_FILE="${parent_path}/cloudflare-dns-update.log"
@@ -51,13 +265,32 @@ touch "$LOG_FILE"
 log "==> Script started"
 
 ### Validate config file
-config_file="${1:-${parent_path}/cloudflare-dns-update.conf}"
+config_file="${config_override:-${1:-${parent_path}/cloudflare-dns-update.conf}}"
 if ! source "$config_file"; then
     log "Error! Missing configuration file $config_file or invalid syntax!"
     exit 1
 fi
 
+# Apply command line overrides
+[ -n "$domains_override" ] && domain_configs="$domains_override"
+[ -n "$token_override" ] && cloudflare_zone_api_token="$token_override"
+[ -n "$ipv6_override" ] && enable_ipv6="$ipv6_override"
+[ -n "$proxy_override" ] && proxied="$proxy_override"
+[ -n "$ttl_override" ] && ttl="$ttl_override"
+
 ### Check validity of parameters
+# Validate domain configurations
+if [[ -z "$domain_configs" ]] || ! [[ "$domain_configs" =~ .*:.* ]]; then
+    log "Error! Invalid or empty domain_configs format. Expected format: zoneid1:domain1.com,domain2.com;zoneid2:domain3.com"
+    exit 1
+fi
+
+# Validate Cloudflare API token
+if [[ -z "$cloudflare_zone_api_token" ]]; then
+    log "Error! Cloudflare API token is required"
+    exit 1
+fi
+
 if ! [[ "$ttl" =~ ^[0-9]+$ ]] || { [ "$ttl" -lt 120 ] || [ "$ttl" -gt 7200 ]; } && [ "$ttl" -ne 1 ]; then
     log "Error! ttl must be 1 or between 120 and 7200"
     exit 1
@@ -73,9 +306,40 @@ if [[ "$auto_create_records" != "yes" && "$auto_create_records" != "no" ]]; then
     exit 1
 fi
 
+if [[ "$enable_ipv6" != "yes" && "$enable_ipv6" != "no" ]]; then
+    log 'Error! Incorrect "enable_ipv6" parameter, choose "yes" or "no"'
+    exit 1
+fi
+
+if [[ "$enable_ipv6" == "yes" ]]; then
+    if [[ "$use_same_record_for_ipv6" != "yes" && "$use_same_record_for_ipv6" != "no" ]]; then
+        log 'Error! Incorrect "use_same_record_for_ipv6" parameter, choose "yes" or "no"'
+        exit 1
+    fi
+    
+    if [[ "$use_same_record_for_ipv6" == "no" ]]; then
+        if [[ -z "$dns_record_ipv6" ]]; then
+            log 'Error! IPv6 is enabled with different records but dns_record_ipv6 is empty'
+            exit 1
+        fi
+        if ! [[ "$dns_record_ipv6" =~ .*\..* ]]; then
+            log "Error! Invalid IPv6 DNS records format. Expected comma-separated domain names"
+            exit 1
+        fi
+    fi
+fi
+
 if ! [[ "$log_cleanup_days" =~ ^[0-9]+$ ]]; then
     log "Error! log_cleanup_days must be a non-negative integer"
     exit 1
+fi
+
+# Validate Telegram settings if enabled
+if [[ "${notify_telegram:-no}" == "yes" ]]; then
+    if [[ -z "${telegram_bot_token:-}" || -z "${telegram_chat_id:-}" ]]; then
+        log "Error! Telegram notifications enabled but token or chat ID is missing"
+        exit 1
+    fi
 fi
 
 # Clean up old log entries if enabled
@@ -87,6 +351,19 @@ ipv6_enabled=$([ "$enable_ipv6" == "yes" ] && echo true || echo false)
 ### Valid IPv4 and IPv6 Regex
 readonly IPV4_REGEX='^([0-9]{1,3}\.){3}[0-9]{1,3}$'
 readonly IPV6_REGEX='^([0-9a-fA-F]{0,4}:){1,7}[0-9a-fA-F]{0,4}$'
+
+### Valid domain name regex (basic validation)
+readonly DOMAIN_REGEX='^([a-zA-Z0-9]([-a-zA-Z0-9]*[a-zA-Z0-9])?\.)+[a-zA-Z]{2,}$'
+
+### Function to validate domain name
+validate_domain() {
+    local domain=$1
+    if ! [[ "$domain" =~ $DOMAIN_REGEX ]]; then
+        log "Error! Invalid domain name format: $domain"
+        return 1
+    fi
+    return 0
+}
 
 ### Function to get external IP (IPv4 or IPv6)
 get_external_ip() {
@@ -131,6 +408,33 @@ ipv4=$(get_external_ip "ipv4") || ipv4=""
 json_extract() {
     local key=$1
     sed -n 's/.*"'"$key"'":"\?\([^,"]*\)"\?.*/\1/p'
+}
+
+### Function to send notification
+send_notification() {
+    local record=$1
+    local type=$2
+    local ip=$3
+    local action=${4:-"updated"}
+
+    # Telegram notification
+    if [ "${notify_telegram:-no}" == "yes" ]; then
+        send_telegram_notification "$record" "$type" "$ip" "$action"
+    fi
+}
+
+### Function to send Telegram notification
+send_telegram_notification() {
+    local record=$1
+    local type=$2
+    local ip=$3
+    local action=$4
+
+    if ! curl -s -X POST "https://api.telegram.org/bot${telegram_bot_token}/sendMessage" \
+        -H "Content-Type: application/json" \
+        --data "{\"chat_id\":\"${telegram_chat_id}\",\"text\":\"${record} DNS ${type} record ${action} to: ${ip}\"}" | grep -q '"ok":true'; then
+        log "Error! Telegram notification failed for $record ($type)"
+    fi
 }
 
 ### Function to update DNS record
@@ -178,7 +482,7 @@ update_dns_record() {
         log "==> Created new DNS $type Record for $record with IP: $ip, ttl: $ttl, proxied: $proxied"
 
         # Telegram notification
-        if [ "${notify_me_telegram:-no}" == "yes" ]; then
+        if [ "${notify_telegram:-no}" == "yes" ]; then
             send_telegram_notification "$record" "$type" "$ip" "created"
         fi
         return 0
@@ -215,34 +519,54 @@ update_dns_record() {
     log "==> $record DNS $type Record updated to: $ip, ttl: $ttl, proxied: $proxied"
 
     # Telegram notification
-    if [ "${notify_me_telegram:-no}" == "yes" ]; then
+    if [ "${notify_telegram:-no}" == "yes" ]; then
         send_telegram_notification "$record" "$type" "$ip" "updated"
     fi
 }
 
-### Function to send Telegram notification
-send_telegram_notification() {
-    local record=$1
-    local type=$2
-    local ip=$3
-    local action=${4:-"updated"}  # Default to "updated" for backward compatibility
-
-    if ! curl -s -X POST "https://api.telegram.org/bot${telegram_bot_API_Token}/sendMessage" \
-        -H "Content-Type: application/json" \
-        --data "{\"chat_id\":\"${telegram_chat_id}\",\"text\":\"${record} DNS ${type} record ${action} to: ${ip}\"}" | grep -q '"ok":true'; then
-        log "Error! Telegram notification failed for $record ($type)"
+# Handle backup/restore if requested
+if [ "$do_backup" = true ] || [ -n "$restore_file" ]; then
+    if ! command -v jq &> /dev/null; then
+        log "Error! jq command not found. Please install jq for backup/restore functionality."
+        exit 1
     fi
-}
+fi
+
+if [ "$do_backup" = true ]; then
+    backup_dns_records
+    exit $?
+fi
+
+if [ -n "$restore_file" ]; then
+    restore_dns_records "$restore_file"
+    exit $?
+fi
 
 # Process each zone and its domains
+if [[ -z "$ipv4" ]] && [[ "$ipv6_enabled" != "yes" || -z "$ipv6" ]]; then
+    log "Error! No valid IP addresses available. IPv4: ${ipv4:-none}, IPv6: ${ipv6:-none}"
+    exit 1
+fi
+
 IFS=';' read -ra zone_configs <<< "$domain_configs"
 for zone_config in "${zone_configs[@]}"; do
     # Split zone ID and domains
     IFS=':' read -r zoneid domains <<< "$zone_config"
     
+    # Validate zone ID format (32 hex characters)
+    if ! [[ "$zoneid" =~ ^[0-9a-f]{32}$ ]]; then
+        log "Error! Invalid zone ID format: $zoneid"
+        exit 1
+    fi
+    
     # Process each domain for this zone
     IFS=',' read -ra domain_list <<< "$domains"
     for domain in "${domain_list[@]}"; do
+        # Validate domain name format
+        if ! validate_domain "$domain"; then
+            exit 1
+        fi
+        
         [ -n "$ipv4" ] && update_dns_record "$zoneid" "$domain" "$ipv4" "A"
         
         if [ "$ipv6_enabled" = true ]; then
