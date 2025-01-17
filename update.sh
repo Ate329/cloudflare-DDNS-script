@@ -389,12 +389,44 @@ if [ -f "$BACKUP_DIR/cloudflare-dns-update.conf" ] && [ -f cloudflare-dns-update
     # Restore user's config for merging
     cp "$BACKUP_DIR/cloudflare-dns-update.conf" ./cloudflare-dns-update.conf
     
-    # Merge new options from the new config
-    if ! merge_configs cloudflare-dns-update.conf cloudflare-dns-update.conf.new; then
-        log_error "Failed to merge configuration files"
-        restore_from_backup "$BACKUP_DIR"
-        rm -f cloudflare-dns-update.conf.new
-        exit 1
+    # If we have stashed changes and the config was modified, we need special handling
+    if [ -f "${BACKUP_DIR}/.stashed" ]; then
+        # Save current index state
+        git stash push -m "Temporary stash for config merge"
+        
+        # Try to apply original stashed changes
+        if ! git stash apply stash@{1}; then
+            log_warn "Could not apply original changes automatically"
+            git stash pop stash@{0}  # Restore current state
+            log_info "Your original changes are in stash@{0}, please merge them manually"
+            rm -f "${BACKUP_DIR}/.stashed"  # Prevent further stash operations
+        else
+            # Now we have the original changes applied
+            # Save the current state of the config
+            cp cloudflare-dns-update.conf cloudflare-dns-update.conf.original
+            
+            # Pop the temporary stash to get back to our state
+            git stash pop
+            
+            # Now merge the configs
+            if ! merge_configs cloudflare-dns-update.conf cloudflare-dns-update.conf.new; then
+                log_error "Failed to merge configuration files"
+                cp cloudflare-dns-update.conf.original cloudflare-dns-update.conf
+                rm -f cloudflare-dns-update.conf.new cloudflare-dns-update.conf.original
+                restore_from_backup "$BACKUP_DIR"
+                exit 1
+            fi
+            
+            rm -f cloudflare-dns-update.conf.original
+        fi
+    else
+        # Normal merge without stashed changes
+        if ! merge_configs cloudflare-dns-update.conf cloudflare-dns-update.conf.new; then
+            log_error "Failed to merge configuration files"
+            restore_from_backup "$BACKUP_DIR"
+            rm -f cloudflare-dns-update.conf.new
+            exit 1
+        fi
     fi
     
     # Cleanup temporary file
@@ -443,6 +475,7 @@ if [ -f "${BACKUP_DIR}/.stashed" ]; then
     else
         log_error "Failed to restore local changes. Please resolve conflicts manually."
         log_info "Your changes are still in the stash and can be restored with 'git stash pop'"
+        # Don't exit with error since the update itself was successful
     fi
 fi
 
