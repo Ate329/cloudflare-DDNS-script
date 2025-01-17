@@ -89,7 +89,7 @@ backups/
 └── ...
 ```
 
-Only the last 10 backups are kept to prevent excessive disk usage. Each backup is stored in a timestamped directory with a unique process ID for easy identification and recovery.
+By default, only the last 10 backups are kept to prevent excessive disk usage. You can adjust this number by setting `max_update_backups` in your configuration file. Each backup is stored in a timestamped directory with a unique process ID for easy identification and recovery.
 
 ### Update Troubleshooting
 
@@ -265,6 +265,7 @@ The script supports the following configuration options:
 | `retry_delay` | integer | Initial delay between retries in seconds |
 | `max_retry_delay` | integer | Maximum delay between retries in seconds |
 | `log_cleanup_days` | integer | Number of days to keep log entries |
+| `max_update_backups` | integer | Number of update backups to keep (default: 10) |
 | `notify_telegram` | "yes"/"no" | Whether to send Telegram notifications |
 | `telegram_bot_token` | string | Your Telegram bot API token |
 | `telegram_chat_id` | string | Your Telegram chat ID |

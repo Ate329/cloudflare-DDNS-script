@@ -285,7 +285,20 @@ merge_configs() {
 
 # Function to cleanup old backups
 cleanup_old_backups() {
-    local max_backups=10  # Keep last 10 backups
+    local default_max_backups=10  # Default to keep last 10 backups
+    local max_backups
+    
+    # Try to get max_backups from config file, use default if not found or invalid
+    if [ -f cloudflare-dns-update.conf ]; then
+        max_backups=$(get_config_value cloudflare-dns-update.conf "max_update_backups")
+        # If empty or not a number, use default
+        if [ -z "$max_backups" ] || ! [[ "$max_backups" =~ ^[0-9]+$ ]]; then
+            max_backups=$default_max_backups
+        fi
+    else
+        max_backups=$default_max_backups
+    fi
+    
     local backup_count
     local backup_dirs
     
@@ -294,7 +307,7 @@ cleanup_old_backups() {
     backup_count=$(echo "$backup_dirs" | wc -l)
     
     if [ "$backup_count" -gt "$max_backups" ]; then
-        log_info "Cleaning up old backups..."
+        log_info "Cleaning up old backups (keeping last $max_backups)..."
         echo "$backup_dirs" | xargs -d '\n' stat --format '%Y %n' 2>/dev/null | \
             sort -n | head -n -${max_backups} | cut -d' ' -f2- | \
             while read -r dir; do
@@ -439,6 +452,12 @@ if [ -f "$BACKUP_DIR/cloudflare-dns-update.conf" ] && [ -f cloudflare-dns-update
     # Create temporary copy of new config
     cp cloudflare-dns-update.conf cloudflare-dns-update.conf.new
     add_temp_file "cloudflare-dns-update.conf.new"
+    
+    # Add new option if it doesn't exist
+    if ! grep -q "^max_update_backups=" cloudflare-dns-update.conf; then
+        echo -e "\n### Update script settings" >> cloudflare-dns-update.conf
+        echo "max_update_backups=10  # Number of update backups to keep (default: 10)" >> cloudflare-dns-update.conf
+    fi
     
     # Restore user's config for merging
     cp "$BACKUP_DIR/cloudflare-dns-update.conf" ./cloudflare-dns-update.conf
