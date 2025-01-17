@@ -74,36 +74,20 @@ if git diff --name-only HEAD..origin/main | grep -q "^update.sh$"; then
     # Make the new script executable
     chmod +x "$TEMP_UPDATE_DIR/update.sh"
     
-    # Backup the current script
-    cp -p "$SCRIPT_PATH" "$TEMP_UPDATE_DIR/update.sh.backup"
-    
     # Replace the old script with the new one
     if ! cp -p "$TEMP_UPDATE_DIR/update.sh" "$SCRIPT_PATH"; then
         log_error "Failed to replace update script"
-        # Restore backup if replacement fails
-        cp -p "$TEMP_UPDATE_DIR/update.sh.backup" "$SCRIPT_PATH"
         exit 1
     fi
     
-    log_info "Update script has been updated. Restarting update process..."
+    # Update git's state to recognize the new script
+    git add update.sh
+    git reset HEAD update.sh
     
-    # Execute the new update script and exit
-    if [ -z "${UPDATE_SCRIPT_RESTARTED:-}" ]; then
-        export UPDATE_SCRIPT_RESTARTED=1
-        exec ./update.sh
-        exit $?
-    elif [ "${UPDATE_SCRIPT_RESTARTED:-0}" -lt 10 ]; then
-        # Allow up to 10 updates (increased from 3)
-        export UPDATE_SCRIPT_RESTARTED=$((UPDATE_SCRIPT_RESTARTED + 1))
-        # Add a small delay between updates to prevent rapid loops
-        sleep 1
-        exec ./update.sh
-        exit $?
-    else
-        log_error "Update script has been updated 10 times. This might indicate a problem with the repository."
-        log_info "Please check the repository state or contact the maintainer."
-        exit 1
-    fi
+    log_info "Update script has been updated. Proceeding with remaining updates..."
+    
+    # Continue with the current script (no restart needed)
+    # The script is already replaced, and git state is updated
 fi
 
 # Temporary files cleanup
