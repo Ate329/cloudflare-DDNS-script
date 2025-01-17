@@ -185,7 +185,7 @@ The script creates a log file named `cloudflare-dns-update.log` in the same dire
 
 ## Contributing
 
-Contributions are welcome! Please feel free to submit a Pull Request.
+Contributions are welcome! Please feel free to submit Pull Requests, Questions or Feature Requests.
 
 ## License
 
