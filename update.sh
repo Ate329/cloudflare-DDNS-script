@@ -13,16 +13,6 @@ log_info() { echo -e "${GREEN}[INFO]${NC} $1"; }
 log_warn() { echo -e "${YELLOW}[WARN]${NC} $1"; }
 log_error() { echo -e "${RED}[ERROR]${NC} $1"; }
 
-# Temporary files cleanup
-declare -a TEMP_FILES=()
-cleanup_temp_files() {
-    if [ ${#TEMP_FILES[@]} -gt 0 ]; then
-        for file in "${TEMP_FILES[@]}"; do
-            [ -f "$file" ] && rm -f "$file"
-        done
-    fi
-}
-
 # Check if git is installed
 if ! command -v git &> /dev/null; then
     log_error "git is not installed. Please install git first."
@@ -33,6 +23,94 @@ fi
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 SCRIPT_PATH="${BASH_SOURCE[0]}"
 cd "$SCRIPT_DIR"
+
+# Create temporary directory for script update
+TEMP_UPDATE_DIR=$(mktemp -d) || {
+    log_error "Failed to create temporary directory for update"
+    exit 1
+}
+
+# Cleanup temporary files on exit
+cleanup_temp() {
+    [ -d "$TEMP_UPDATE_DIR" ] && rm -rf "$TEMP_UPDATE_DIR"
+}
+trap cleanup_temp EXIT
+
+# Check if we're in a git repository
+if ! git rev-parse --is-inside-work-tree > /dev/null 2>&1; then
+    log_error "Not in a git repository. Please run this script from the project directory."
+    exit 1
+fi
+
+# Verify remote exists
+if ! git remote get-url origin >/dev/null 2>&1; then
+    log_error "No 'origin' remote found. Please ensure the repository is properly configured."
+    exit 1
+fi
+
+# Fetch updates once at the beginning
+log_info "Checking for updates..."
+if ! git fetch origin main; then
+    log_error "Failed to fetch updates. Please check your internet connection."
+    exit 1
+fi
+
+# Check if update.sh needs updating (do this before any other operations)
+if git diff --name-only HEAD..origin/main | grep -q "^update.sh$"; then
+    log_info "Update script needs updating. Updating it first..."
+    
+    # Get the new version in a temporary location first
+    if ! git show origin/main:update.sh > "$TEMP_UPDATE_DIR/update.sh"; then
+        log_error "Failed to get new update script"
+        exit 1
+    fi
+    
+    # Verify the new script
+    if ! bash -n "$TEMP_UPDATE_DIR/update.sh"; then
+        log_error "New update script contains syntax errors"
+        exit 1
+    fi
+    
+    # Make the new script executable
+    chmod +x "$TEMP_UPDATE_DIR/update.sh"
+    
+    # Backup the current script
+    cp -p "$SCRIPT_PATH" "$TEMP_UPDATE_DIR/update.sh.backup"
+    
+    # Replace the old script with the new one
+    if ! cp -p "$TEMP_UPDATE_DIR/update.sh" "$SCRIPT_PATH"; then
+        log_error "Failed to replace update script"
+        # Restore backup if replacement fails
+        cp -p "$TEMP_UPDATE_DIR/update.sh.backup" "$SCRIPT_PATH"
+        exit 1
+    fi
+    
+    log_info "Update script has been updated. Restarting update process..."
+    
+    # Execute the new update script and exit
+    if [ -z "${UPDATE_SCRIPT_RESTARTED:-}" ]; then
+        export UPDATE_SCRIPT_RESTARTED=1
+        exec ./update.sh
+        exit $?
+    elif [ "${UPDATE_SCRIPT_RESTARTED:-0}" -lt 3 ]; then
+        export UPDATE_SCRIPT_RESTARTED=$((UPDATE_SCRIPT_RESTARTED + 1))
+        exec ./update.sh
+        exit $?
+    else
+        log_error "Update script has been updated multiple times. Something might be wrong."
+        exit 1
+    fi
+fi
+
+# Temporary files cleanup
+declare -a TEMP_FILES=()
+cleanup_temp_files() {
+    if [ ${#TEMP_FILES[@]} -gt 0 ]; then
+        for file in "${TEMP_FILES[@]}"; do
+            [ -f "$file" ] && rm -f "$file"
+        done
+    fi
+}
 
 # Create backup directory with timestamp and pid for uniqueness
 BACKUP_DIR=$(mktemp -d "${SCRIPT_DIR}/backups/$(date +%Y%m%d_%H%M%S)_XXXXXX") || {
@@ -47,19 +125,37 @@ CHANGES_STASHED=0
 handle_local_changes() {
     # Only stash if we haven't already
     if [ "$CHANGES_STASHED" -eq 0 ] && { ! git diff --quiet || ! git diff --cached --quiet; }; then
-        log_warn "You have local changes to your configuration"
-        read -p "Do you want to temporarily save these changes and continue? [y/N] " -n 1 -r
-        echo
-        if [[ ! $REPLY =~ ^[Yy]$ ]]; then
-            exit 1
-        fi
-        log_info "Saving your local changes..."
-        if git stash; then
-            CHANGES_STASHED=1
-            touch "${BACKUP_DIR}/.stashed"
-        else
-            log_error "Failed to save local changes"
-            exit 1
+        # Check if there are changes other than update.sh
+        local has_other_changes=0
+        while IFS= read -r file; do
+            if [ "$file" != "update.sh" ]; then
+                has_other_changes=1
+                break
+            fi
+        done < <(git diff --name-only; git diff --cached --name-only)
+
+        if [ "$has_other_changes" -eq 1 ]; then
+            log_warn "You have local changes to your configuration"
+            read -p "Do you want to temporarily save these changes and continue? [y/N] " -n 1 -r
+            echo
+            if [[ ! $REPLY =~ ^[Yy]$ ]]; then
+                exit 1
+            fi
+            log_info "Saving your local changes..."
+            
+            # First, reset update.sh if it has changes
+            if git diff --quiet update.sh || git diff --cached --quiet update.sh; then
+                git checkout -- update.sh 2>/dev/null || true
+            fi
+            
+            # Now try to stash other changes
+            if git stash push -- ':!update.sh'; then
+                CHANGES_STASHED=1
+                touch "${BACKUP_DIR}/.stashed"
+            else
+                log_error "Failed to save local changes"
+                exit 1
+            fi
         fi
     fi
 }
@@ -344,18 +440,6 @@ fi
 # Cleanup old backups
 cleanup_old_backups
 
-# Check if we're in a git repository
-if ! git rev-parse --is-inside-work-tree > /dev/null 2>&1; then
-    log_error "Not in a git repository. Please run this script from the project directory."
-    exit 1
-fi
-
-# Verify remote exists
-if ! git remote get-url origin >/dev/null 2>&1; then
-    log_error "No 'origin' remote found. Please ensure the repository is properly configured."
-    exit 1
-fi
-
 # Check if we're on the main branch
 current_branch=$(git rev-parse --abbrev-ref HEAD)
 if [ "$current_branch" != "main" ]; then
@@ -369,14 +453,6 @@ fi
 
 # Check for uncommitted changes before any git operations
 handle_local_changes
-
-# Fetch updates once at the beginning
-log_info "Checking for updates..."
-if ! git fetch origin main; then
-    log_error "Failed to fetch updates. Please check your internet connection."
-    restore_stashed_changes
-    exit 1
-fi
 
 # Check if we're behind origin/main
 COMMITS_BEHIND=$(git rev-list HEAD..origin/main --count)
@@ -398,37 +474,6 @@ if [ "$COMMITS_BEHIND" -eq 0 ]; then
     fi
     log_info "Already up to date."
     exit 0
-fi
-
-# Check if update.sh will be modified
-if git diff --name-only HEAD..origin/main | grep -q "^update.sh$"; then
-    log_info "Update script needs updating. Updating it first..."
-    
-    # Pull only the update script
-    if ! git checkout origin/main -- update.sh; then
-        log_error "Failed to update the script"
-        exit 1
-    fi
-    
-    if ! verify_file update.sh; then
-        log_error "New update script is invalid"
-        exit 1
-    fi
-    
-    # Make the new script executable
-    chmod +x update.sh
-    
-    log_info "Update script has been updated. Restarting update process..."
-    
-    # Execute the new update script and exit, but prevent infinite loop
-    if [ -z "${UPDATE_SCRIPT_RESTARTED:-}" ]; then
-        export UPDATE_SCRIPT_RESTARTED=1
-        export CHANGES_STASHED=$CHANGES_STASHED  # Pass stash state to new process
-        exec ./update.sh
-        exit $?
-    else
-        log_warn "Update script has been updated multiple times. Proceeding with current version."
-    fi
 fi
 
 # If we get here, the update script doesn't need updating, proceed with normal updates
