@@ -157,7 +157,7 @@ handle_local_changes() {
 
 # Function to restore stashed changes
 restore_stashed_changes() {
-    if [ "$CHANGES_STASHED" -eq 1 ] && [ -f "${BACKUP_DIR}/.stashed" ]; then
+    if [ "$CHANGES_STASHED" -eq 1 ] && [ -f "${BACKUP_DIR}/.stashed" ] && [ ! -f "${BACKUP_DIR}/.stash_restored" ]; then
         log_info "Restoring your saved local changes..."
         if git stash pop; then
             touch "${BACKUP_DIR}/.stash_restored"
@@ -175,8 +175,10 @@ restore_stashed_changes() {
 cleanup() {
     local exit_code=$?
     cleanup_temp_files
-    # Always try to restore stashed changes on exit if they weren't restored already
-    restore_stashed_changes
+    # Only try to restore stashed changes if they weren't restored already
+    if [ "$CHANGES_STASHED" -eq 1 ] && [ ! -f "${BACKUP_DIR}/.stash_restored" ]; then
+        restore_stashed_changes
+    fi
     exit $exit_code
 }
 trap cleanup EXIT
@@ -533,16 +535,8 @@ if ! verify_file update.sh || ! verify_file cloudflare-dns-update.sh; then
 fi
 
 # Pop stashed changes if any
-if [ -f "${BACKUP_DIR}/.stashed" ]; then
-    log_info "Restoring your saved local changes..."
-    if git stash pop; then
-        touch "${BACKUP_DIR}/.stash_restored"
-        log_info "Your local changes have been restored successfully"
-    else
-        log_error "Failed to restore your local changes automatically."
-        log_info "Your changes are saved and can be restored manually with: git stash pop"
-        # Don't exit with error since the update itself was successful
-    fi
+if [ -f "${BACKUP_DIR}/.stashed" ] && [ ! -f "${BACKUP_DIR}/.stash_restored" ]; then
+    restore_stashed_changes
 fi
 
 log_info "Update completed successfully!"
