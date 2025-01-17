@@ -40,20 +40,52 @@ BACKUP_DIR=$(mktemp -d "${SCRIPT_DIR}/backups/$(date +%Y%m%d_%H%M%S)_XXXXXX") ||
     exit 1
 }
 
+# Global variable to track if we've already stashed changes
+CHANGES_STASHED=0
+
+# Function to handle stashing
+handle_local_changes() {
+    # Only stash if we haven't already
+    if [ "$CHANGES_STASHED" -eq 0 ] && { ! git diff --quiet || ! git diff --cached --quiet; }; then
+        log_warn "You have local changes to your configuration"
+        read -p "Do you want to temporarily save these changes and continue? [y/N] " -n 1 -r
+        echo
+        if [[ ! $REPLY =~ ^[Yy]$ ]]; then
+            exit 1
+        fi
+        log_info "Saving your local changes..."
+        if git stash; then
+            CHANGES_STASHED=1
+            touch "${BACKUP_DIR}/.stashed"
+        else
+            log_error "Failed to save local changes"
+            exit 1
+        fi
+    fi
+}
+
+# Function to restore stashed changes
+restore_stashed_changes() {
+    if [ "$CHANGES_STASHED" -eq 1 ] && [ -f "${BACKUP_DIR}/.stashed" ]; then
+        log_info "Restoring your saved local changes..."
+        if git stash pop; then
+            touch "${BACKUP_DIR}/.stash_restored"
+            log_info "Your local changes have been restored successfully"
+            CHANGES_STASHED=0
+        else
+            log_error "Failed to restore your local changes automatically."
+            log_info "Your changes are saved and can be restored manually with: git stash pop"
+            # Don't exit with error since the update itself was successful
+        fi
+    fi
+}
+
 # Trap for cleanup on script exit
 cleanup() {
     local exit_code=$?
     cleanup_temp_files
-    # If we have stashed changes and haven't restored them
-    if [ -f "${BACKUP_DIR}/.stashed" ] && [ ! -f "${BACKUP_DIR}/.stash_restored" ]; then
-        log_warn "Update interrupted. Attempting to restore your local changes..."
-        if git stash pop; then
-            log_info "Your local changes have been restored."
-        else
-            log_error "Failed to restore your local changes."
-            log_info "Your changes are saved and can be restored manually with: git stash pop"
-        fi
-    fi
+    # Always try to restore stashed changes on exit if they weren't restored already
+    restore_stashed_changes
     exit $exit_code
 }
 trap cleanup EXIT
@@ -322,27 +354,14 @@ if [ "$current_branch" != "main" ]; then
     fi
 fi
 
-# Check for uncommitted changes
-if ! git diff --quiet || ! git diff --cached --quiet; then
-    log_warn "You have local changes to your configuration"
-    read -p "Do you want to temporarily save these changes and continue? [y/N] " -n 1 -r
-    echo
-    if [[ ! $REPLY =~ ^[Yy]$ ]]; then
-        exit 1
-    fi
-    log_info "Saving your local changes..."
-    if git stash; then
-        touch "${BACKUP_DIR}/.stashed"
-    else
-        log_error "Failed to save local changes"
-        exit 1
-    fi
-fi
+# Check for uncommitted changes before any git operations
+handle_local_changes
 
 # Fetch updates once at the beginning
 log_info "Checking for updates..."
 if ! git fetch origin main; then
     log_error "Failed to fetch updates. Please check your internet connection."
+    restore_stashed_changes
     exit 1
 fi
 
@@ -385,12 +404,14 @@ if [ $UPDATE_SCRIPT_CHANGED -eq 1 ]; then
     if ! git checkout origin/main -- update.sh; then
         log_error "Failed to update the script"
         mv update.sh.updating update.sh
+        restore_stashed_changes
         exit 1
     fi
     
     if ! verify_file update.sh; then
         log_error "New update script is invalid"
         mv update.sh.updating update.sh
+        restore_stashed_changes
         exit 1
     fi
     
@@ -402,6 +423,7 @@ if [ $UPDATE_SCRIPT_CHANGED -eq 1 ]; then
     # Execute the new update script and exit, but prevent infinite loop
     if [ -z "${UPDATE_SCRIPT_RESTARTED:-}" ]; then
         export UPDATE_SCRIPT_RESTARTED=1
+        export CHANGES_STASHED=$CHANGES_STASHED  # Pass stash state to new process
         exec ./update.sh
         exit $?
     else
@@ -414,6 +436,7 @@ if ! git pull origin main; then
     log_error "Failed to pull updates. Please check your internet connection or repository access."
     # Restore from latest backup
     restore_from_backup "$BACKUP_DIR"
+    restore_stashed_changes
     exit 1
 fi
 
