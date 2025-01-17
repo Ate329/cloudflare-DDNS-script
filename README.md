@@ -66,7 +66,7 @@ The script can be run in several ways:
 
 For automatic updates, you can set up a cron job. For example, to run the script every 5 minutes:
 
-#### Standard Linux/Unix Systems
+#### In most Linux/Unix Distributions
 Run the command:
 ```bash
 crontab -e
