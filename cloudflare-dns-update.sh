@@ -12,6 +12,37 @@ log_to_file() {
     echo "$(date "+%Y-%m-%d %H:%M:%S") $1" >> "$LOG_FILE"
 }
 
+### Function to cleanup old log entries
+cleanup_logs() {
+    local days=$1
+    local temp_file
+    temp_file=$(mktemp)
+    
+    if [ "$days" -gt 0 ]; then
+        # Calculate the cutoff date in seconds since epoch
+        local cutoff_date
+        cutoff_date=$(date -d "$days days ago" +%s)
+        
+        # Keep only recent entries
+        while IFS= read -r line; do
+            # Extract the date from the log line and convert to seconds since epoch
+            local line_date
+            line_date=$(date -d "$(echo "$line" | cut -d' ' -f1,2)" +%s)
+            
+            # Keep the line if it's newer than cutoff date
+            if [ "$line_date" -ge "$cutoff_date" ]; then
+                echo "$line" >> "$temp_file"
+            fi
+        done < "$LOG_FILE"
+        
+        # Replace the old log file with the cleaned one
+        mv "$temp_file" "$LOG_FILE"
+        log "==> Cleaned up log entries older than $days days"
+    else
+        rm "$temp_file"  # Clean up temp file if not used
+    fi
+}
+
 ### Create log file
 parent_path="$(dirname "${BASH_SOURCE[0]}")"
 LOG_FILE="${parent_path}/cloudflare-dns-update.log"
@@ -41,6 +72,14 @@ if [[ "$auto_create_records" != "yes" && "$auto_create_records" != "no" ]]; then
     log 'Error! Incorrect "auto_create_records" parameter, choose "yes" or "no"'
     exit 1
 fi
+
+if ! [[ "$log_cleanup_days" =~ ^[0-9]+$ ]]; then
+    log "Error! log_cleanup_days must be a non-negative integer"
+    exit 1
+fi
+
+# Clean up old log entries if enabled
+cleanup_logs "$log_cleanup_days"
 
 # Check if IPv6 is enabled
 ipv6_enabled=$([ "$enable_ipv6" == "yes" ] && echo true || echo false)

@@ -10,6 +10,7 @@ cloudflare-DDNS-script is a Bash script that automatically updates Cloudflare DN
 - Uses multiple sources to reliably fetch public IP addresses
 - Configurable Time To Live (TTL) and proxy settings
 - Optional Telegram notifications for successful updates and record creation
+- Detailed logging with automatic cleanup of old entries
 - Detailed logging for easy troubleshooting (including API responses)
 
 ## Prerequisites
@@ -52,6 +53,9 @@ ttl=1  # Or any value between 120 and 7200 (1 for automatic)
 proxied=false  # Or true
 auto_create_records="yes"  # Set to "no" to skip creating non-existent records
 
+### Log settings
+log_cleanup_days=7  # Number of days to keep logs (0 to disable cleanup)
+
 ### Telegram notification settings (optional)
 notify_me_telegram="no"  # Or "yes"
 telegram_bot_API_Token="your_telegram_bot_token"  # If using Telegram notifications
@@ -74,6 +78,7 @@ The script supports the following configuration options:
 | `ttl` | 1 or 120-7200 | Time To Live in seconds (1 for automatic) |
 | `proxied` | true/false | Whether to proxy the DNS records through Cloudflare |
 | `auto_create_records` | "yes"/"no" | Whether to automatically create non-existent DNS records |
+| `log_cleanup_days` | integer | Number of days to keep log entries (0 to disable cleanup) |
 | `notify_me_telegram` | "yes"/"no" | Whether to send Telegram notifications |
 | `telegram_bot_API_Token` | string | Your Telegram bot API token (if notifications enabled) |
 | `telegram_chat_id` | string | Your Telegram chat ID (if notifications enabled) |
