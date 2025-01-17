@@ -113,6 +113,13 @@ cleanup_temp_files() {
 }
 
 # Create backup directory with timestamp and pid for uniqueness
+if [ ! -d "${SCRIPT_DIR}/backups" ]; then
+    mkdir -p "${SCRIPT_DIR}/backups" || {
+        log_error "Failed to create backups directory"
+        exit 1
+    }
+fi
+
 BACKUP_DIR=$(mktemp -d "${SCRIPT_DIR}/backups/$(date +%Y%m%d_%H%M%S)_XXXXXX") || {
     log_error "Failed to create backup directory"
     exit 1
