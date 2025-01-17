@@ -1,11 +1,11 @@
 # cloudflare DDNS Script
 
-cloudflare-DDNS-script is a Bash script that automatically updates Cloudflare DNS records with your current external IP address. It supports both IPv4 and IPv6, and can update multiple domains simultaneously. This script is particularly useful for any user who has a dynamic IP address and wants to keep their Cloudflare DNS records up to date without having an additional DDNS provider.
+cloudflare-DDNS-script is a Bash script that automatically updates Cloudflare DNS records with your current external IP address. It supports both IPv4 and IPv6, and can update multiple domains across different Cloudflare zones simultaneously. This script is particularly useful for any user who has a dynamic IP address and wants to keep their Cloudflare DNS records up to date without having an additional DDNS provider.
 
 ## Features
 
 - Updates both A (IPv4) and AAAA (IPv6) records
-- Supports multiple domains
+- Supports multiple domains across different Cloudflare zones
 - Uses multiple sources to reliably fetch public IP addresses
 - Configurable Time To Live (TTL) and proxy settings
 - Optional Telegram notifications for successful updates
@@ -38,17 +38,43 @@ cloudflare-DDNS-script is a Bash script that automatically updates Cloudflare DN
 The configuration is in a file named `cloudflare-dns-update.conf` with the following content:
 
 ```bash
-zoneid="your_cloudflare_zone_id"
+### Domain configurations
+# Format: domain_configs="zoneid1:domain1.com,domain2.com;zoneid2:domain3.com,domain4.com"
+domain_configs="your_cloudflare_zone_id1:example1.com,sub1.example1.com;your_cloudflare_zone_id2:example2.com,sub2.example2.com"
+
+### Global settings
 cloudflare_zone_api_token="your_cloudflare_api_token"
-dns_record="example.com,subdomain.example.com"  # Comma-separated list of domains
+enable_ipv6="no"  # Set to "yes" to enable IPv6 updates
+use_same_record_for_ipv6="yes"  # Set to "no" to use different records for IPv6
+dns_record_ipv6=""  # Only used if use_same_record_for_ipv6 is set to "no"
 ttl=1  # Or any value between 120 and 7200 (1 for automatic)
 proxied=false  # Or true
+
+### Telegram notification settings (optional)
 notify_me_telegram="no"  # Or "yes"
 telegram_bot_API_Token="your_telegram_bot_token"  # If using Telegram notifications
 telegram_chat_id="your_telegram_chat_id"  # If using Telegram notifications
 ```
 
 Replace the placeholder values with your actual Cloudflare and Telegram (if used) credentials.
+
+### Domain Configuration Format
+
+The `domain_configs` parameter uses the following format:
+- Multiple zone configurations are separated by semicolons (;)
+- Each zone configuration consists of a zone ID and its domains, separated by a colon (:)
+- Multiple domains within a zone are separated by commas (,)
+
+Example:
+```bash
+domain_configs="abc123:example1.com,www.example1.com;def456:example2.com,blog.example2.com"
+```
+
+This configuration will update:
+- `example1.com` and `www.example1.com` using zone ID `abc123`
+- `example2.com` and `blog.example2.com` using zone ID `def456`
+
+You can find your Zone IDs in the Cloudflare dashboard under the domain's overview page.
 
 This is where you can get your API Tokens: https://dash.cloudflare.com/profile/api-tokens   
 ***You should get the API Tokens by clicking the "Create Token" button instead of the API Keys.   

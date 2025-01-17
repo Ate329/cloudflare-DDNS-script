@@ -40,14 +40,6 @@ fi
 # Check if IPv6 is enabled
 ipv6_enabled=$([ "$enable_ipv6" == "yes" ] && echo true || echo false)
 
-# Determine which DNS records to use for IPv6
-if [ "$ipv6_enabled" = true ] && [ "$use_same_record_for_ipv6" == "yes" ]; then
-    dns_record_ipv6="$dns_record"
-elif [ "$ipv6_enabled" = true ] && [ -z "$dns_record_ipv6" ]; then
-    log "Error! IPv6 is enabled but no IPv6 DNS records specified."
-    exit 1
-fi
-
 ### Valid IPv4 and IPv6 Regex
 readonly IPV4_REGEX='^([0-9]{1,3}\.){3}[0-9]{1,3}$'
 readonly IPV6_REGEX='^([0-9a-fA-F]{0,4}:){1,7}[0-9a-fA-F]{0,4}$'
@@ -99,9 +91,10 @@ json_extract() {
 
 ### Function to update DNS record
 update_dns_record() {
-    local record=$1
-    local ip=$2
-    local type=$3
+    local zoneid=$1
+    local record=$2
+    local ip=$3
+    local type=$4
 
     # Get the DNS record information from Cloudflare API
     local cloudflare_record_info
@@ -109,7 +102,7 @@ update_dns_record() {
         -H "Authorization: Bearer $cloudflare_zone_api_token" \
         -H "Content-Type: application/json")
 
-    log_to_file "Cloudflare API response: $cloudflare_record_info" # Log the API response to file for debugging
+    log_to_file "Cloudflare API response for $record: $cloudflare_record_info" # Log the API response to file for debugging
 
     if [[ $cloudflare_record_info == *"\"success\":false"* ]]; then
         log "Error! Can't get $record ($type) record information from Cloudflare API"
@@ -165,17 +158,28 @@ send_telegram_notification() {
     fi
 }
 
-# Update DNS records
-IFS=',' read -ra dns_records <<< "$dns_record"
-for record in "${dns_records[@]}"; do
-    [ -n "$ipv4" ] && update_dns_record "$record" "$ipv4" "A"
-done
-
-if [ "$ipv6_enabled" = true ]; then
-    IFS=',' read -ra dns_records_ipv6 <<< "$dns_record_ipv6"
-    for record in "${dns_records_ipv6[@]}"; do
-        [ -n "$ipv6" ] && update_dns_record "$record" "$ipv6" "AAAA"
+# Process each zone and its domains
+IFS=';' read -ra zone_configs <<< "$domain_configs"
+for zone_config in "${zone_configs[@]}"; do
+    # Split zone ID and domains
+    IFS=':' read -r zoneid domains <<< "$zone_config"
+    
+    # Process each domain for this zone
+    IFS=',' read -ra domain_list <<< "$domains"
+    for domain in "${domain_list[@]}"; do
+        [ -n "$ipv4" ] && update_dns_record "$zoneid" "$domain" "$ipv4" "A"
+        
+        if [ "$ipv6_enabled" = true ]; then
+            if [ "$use_same_record_for_ipv6" == "yes" ]; then
+                [ -n "$ipv6" ] && update_dns_record "$zoneid" "$domain" "$ipv6" "AAAA"
+            else
+                IFS=',' read -ra dns_records_ipv6 <<< "$dns_record_ipv6"
+                for record in "${dns_records_ipv6[@]}"; do
+                    [ -n "$ipv6" ] && update_dns_record "$zoneid" "$record" "$ipv6" "AAAA"
+                done
+            fi
+        fi
     done
-fi
+done
 
 log "==> Script finished"
