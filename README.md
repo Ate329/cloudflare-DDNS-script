@@ -40,7 +40,7 @@ cloudflare-DDNS-script is a Bash script that automatically updates Cloudflare DN
 
 ## Updating
 
-The script includes an easy update mechanism that preserves your configuration while adding any new options. To update to the latest version:
+The script includes a robust update mechanism that preserves your configuration while safely adding any new options. To update to the latest version:
 
 1. Simply run:
    ```bash
@@ -48,15 +48,25 @@ The script includes an easy update mechanism that preserves your configuration w
    ```
 
 The update script will:
-- Backup your current configuration and log files
-- Stash any local changes you've made
+- Create a backup of your current configuration, log files, and the update script itself
+- Maintain a history of the last 10 backups for safety
+- Check for any local changes and offer to stash them
+- Verify the git repository and branch status
 - Pull the latest changes from the repository
-- Automatically merge any new configuration options while preserving your existing settings
+- Intelligently merge any new configuration options while:
+  - Preserving all your existing settings and comments
+  - Adding new options in their correct sections
+  - Creating a `.new` file for you to review any changes
 - Restore your configuration and log files
-- Restore any local changes you had
+- Restore any stashed local changes
+- Verify the integrity of all updated files
 - Make sure all scripts are executable
 
-Your configuration and logs will be preserved during the update process, and any new configuration options will be automatically added to your config file with default values. The script will notify you of any new options that were added so you can review and adjust them as needed.
+If the update script itself is modified during the update, you'll be notified and prompted to run the update again to ensure all changes are properly applied.
+
+Your configuration and logs will be preserved during the update process, and any new configuration options will be automatically added to your config file with default values. The script will notify you of any new options or sections that were added so you can review and adjust them as needed.
+
+All previous versions of your files are safely stored in timestamped backup directories under `./backups/`, allowing you to recover previous configurations if needed.
 
 ## Usage
 
