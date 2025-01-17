@@ -18,6 +18,7 @@ cloudflare-DDNS-script is a Bash script that automatically updates Cloudflare DN
 ## Prerequisites
 
 - Bash shell
+- `git` command-line tool (for installation and updates)
 - `curl` command-line tool
 - `jq` command-line tool (for backup/restore functionality)
 - A Cloudflare account with the domain(s) you want to update
@@ -66,7 +67,47 @@ If the update script itself is modified during the update, you'll be notified an
 
 Your configuration and logs will be preserved during the update process, and any new configuration options will be automatically added to your config file with default values. The script will notify you of any new options or sections that were added so you can review and adjust them as needed.
 
-All previous versions of your files are safely stored in timestamped backup directories under `./backups/`, allowing you to recover previous configurations if needed.
+### Backup Directory Structure
+
+The script maintains backups in the `./backups/` directory with the following structure:
+```
+backups/
+├── YYYYMMDD_HHMMSS/  (most recent)
+│   ├── cloudflare-dns-update.conf
+│   ├── cloudflare-dns-update.log
+│   └── update.sh
+├── YYYYMMDD_HHMMSS/  (previous)
+│   └── ...
+└── ...
+```
+
+Only the last 10 backups are kept to prevent excessive disk usage. Each backup is stored in a timestamped directory for easy identification and recovery.
+
+### Update Troubleshooting
+
+Common issues and solutions:
+
+1. **Git Not Found**
+   - Error: "git is not installed"
+   - Solution: Install git using your system's package manager
+
+2. **Permission Denied**
+   - Error: "Permission denied" when running update.sh
+   - Solution: Make sure the script is executable: `chmod +x update.sh`
+
+3. **Local Changes Conflict**
+   - Issue: You have local changes that conflict with updates
+   - Solution: Either commit your changes or allow the script to stash them
+
+4. **Configuration Merge Issues**
+   - Issue: New configuration options not appearing in correct sections
+   - Solution: Check the `.new` file created during update and manually adjust if needed
+
+5. **Update Script Modified**
+   - Issue: Update script was modified during update
+   - Solution: Run the update script again as prompted
+
+For other issues, check the log file (`cloudflare-dns-update.log`) for detailed error messages.
 
 ## Usage
 
