@@ -92,12 +92,16 @@ if git diff --name-only HEAD..origin/main | grep -q "^update.sh$"; then
         export UPDATE_SCRIPT_RESTARTED=1
         exec ./update.sh
         exit $?
-    elif [ "${UPDATE_SCRIPT_RESTARTED:-0}" -lt 3 ]; then
+    elif [ "${UPDATE_SCRIPT_RESTARTED:-0}" -lt 10 ]; then
+        # Allow up to 10 updates (increased from 3)
         export UPDATE_SCRIPT_RESTARTED=$((UPDATE_SCRIPT_RESTARTED + 1))
+        # Add a small delay between updates to prevent rapid loops
+        sleep 1
         exec ./update.sh
         exit $?
     else
-        log_error "Update script has been updated multiple times. Something might be wrong."
+        log_error "Update script has been updated 10 times. This might indicate a problem with the repository."
+        log_info "Please check the repository state or contact the maintainer."
         exit 1
     fi
 fi
