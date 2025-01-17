@@ -49,39 +49,47 @@ The script includes a robust update mechanism that preserves your configuration 
    ```
 
 The update script will:
-- Create a backup of your current configuration, log files, and the update script itself
-- Maintain a history of the last 10 backups for safety
-- Check for any local changes and offer to stash them
-- Verify the git repository and branch status
+- Create a timestamped backup of your current configuration, log files, and the update script itself
+- Maintain a history of the last 10 backups for safety (stored in `./backups/`)
+- Check if you're in a git repository and on the main branch
+- Check for any local changes and offer to stash them safely
+- Verify the git repository and remote configuration
+- Check if the update script itself needs updating (and if so, update it first)
 - Pull the latest changes from the repository
 - Intelligently merge any new configuration options while:
-  - Preserving all your existing settings and comments
-  - Adding new options in their correct sections
+  - Preserving all your existing settings, comments, and file permissions
+  - Adding new options in their correct sections with descriptive comments
   - Creating a `.new` file for you to review any changes
 - Restore your configuration and log files
 - Restore any stashed local changes
 - Verify the integrity of all updated files
 - Make sure all scripts are executable
 
-If the update script itself is modified during the update, you'll be notified and prompted to run the update again to ensure all changes are properly applied.
+### Safety Features
 
-Your configuration and logs will be preserved during the update process, and any new configuration options will be automatically added to your config file with default values. The script will notify you of any new options or sections that were added so you can review and adjust them as needed.
+The update process includes several safety measures:
+- All operations are atomic (they either complete fully or not at all)
+- File permissions are preserved during backup and restore
+- Stashed changes are automatically restored even if the script is interrupted
+- File integrity is verified at multiple steps
+- Backup directory names include timestamps and process IDs to prevent conflicts
+- The update script updates itself first to ensure the latest update logic is used
 
-### Backup Directory Structure
+### Backup System
 
 The script maintains backups in the `./backups/` directory with the following structure:
 ```
 backups/
-├── YYYYMMDD_HHMMSS/  (most recent)
+├── YYYYMMDD_HHMMSS_PID/  (most recent)
 │   ├── cloudflare-dns-update.conf
 │   ├── cloudflare-dns-update.log
 │   └── update.sh
-├── YYYYMMDD_HHMMSS/  (previous)
+├── YYYYMMDD_HHMMSS_PID/  (previous)
 │   └── ...
 └── ...
 ```
 
-Only the last 10 backups are kept to prevent excessive disk usage. Each backup is stored in a timestamped directory for easy identification and recovery.
+Only the last 10 backups are kept to prevent excessive disk usage. Each backup is stored in a timestamped directory with a unique process ID for easy identification and recovery.
 
 ### Update Troubleshooting
 
@@ -98,16 +106,27 @@ Common issues and solutions:
 3. **Local Changes Conflict**
    - Issue: You have local changes that conflict with updates
    - Solution: Either commit your changes or allow the script to stash them
+   - Note: Stashed changes will be automatically restored after the update
 
 4. **Configuration Merge Issues**
    - Issue: New configuration options not appearing in correct sections
    - Solution: Check the `.new` file created during update and manually adjust if needed
+   - Note: Your original configuration is always backed up before any changes
 
 5. **Update Script Modified**
    - Issue: Update script was modified during update
    - Solution: Run the update script again as prompted
+   - Note: The old version is safely backed up before any changes
 
-For other issues, check the log file (`cloudflare-dns-update.log`) for detailed error messages.
+6. **Script Interruption**
+   - Issue: Update process was interrupted
+   - Solution: Run the update script again
+   - Note: The script will automatically clean up and restore stashed changes
+
+For other issues:
+- Check the log file (`cloudflare-dns-update.log`) for detailed error messages
+- Look in the backup directory for previous versions of your files
+- The script will automatically roll back changes if any part of the update fails
 
 ## Usage
 
