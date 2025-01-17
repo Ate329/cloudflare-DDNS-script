@@ -6,9 +6,10 @@ cloudflare-DDNS-script is a Bash script that automatically updates Cloudflare DN
 
 - Updates both A (IPv4) and AAAA (IPv6) records
 - Supports multiple domains across different Cloudflare zones
+- Configurable automatic creation of non-existent DNS records
 - Uses multiple sources to reliably fetch public IP addresses
 - Configurable Time To Live (TTL) and proxy settings
-- Optional Telegram notifications for successful updates
+- Optional Telegram notifications for successful updates and record creation
 - Detailed logging for easy troubleshooting (including API responses)
 
 ## Prerequisites
@@ -49,6 +50,7 @@ use_same_record_for_ipv6="yes"  # Set to "no" to use different records for IPv6
 dns_record_ipv6=""  # Only used if use_same_record_for_ipv6 is set to "no"
 ttl=1  # Or any value between 120 and 7200 (1 for automatic)
 proxied=false  # Or true
+auto_create_records="yes"  # Set to "no" to skip creating non-existent records
 
 ### Telegram notification settings (optional)
 notify_me_telegram="no"  # Or "yes"
@@ -57,6 +59,24 @@ telegram_chat_id="your_telegram_chat_id"  # If using Telegram notifications
 ```
 
 Replace the placeholder values with your actual Cloudflare and Telegram (if used) credentials.
+
+### Configuration Options
+
+The script supports the following configuration options:
+
+| Option | Values | Description |
+|--------|--------|-------------|
+| `domain_configs` | string | Semicolon-separated list of zone configurations (see Domain Configuration Format section) |
+| `cloudflare_zone_api_token` | string | Your Cloudflare API token |
+| `enable_ipv6` | "yes"/"no" | Whether to update AAAA (IPv6) records |
+| `use_same_record_for_ipv6` | "yes"/"no" | Whether to use the same domain names for IPv6 records |
+| `dns_record_ipv6` | string | Comma-separated list of IPv6 domains (only used if use_same_record_for_ipv6 is "no") |
+| `ttl` | 1 or 120-7200 | Time To Live in seconds (1 for automatic) |
+| `proxied` | true/false | Whether to proxy the DNS records through Cloudflare |
+| `auto_create_records` | "yes"/"no" | Whether to automatically create non-existent DNS records |
+| `notify_me_telegram` | "yes"/"no" | Whether to send Telegram notifications |
+| `telegram_bot_API_Token` | string | Your Telegram bot API token (if notifications enabled) |
+| `telegram_chat_id` | string | Your Telegram chat ID (if notifications enabled) |
 
 ### Domain Configuration Format
 

@@ -37,6 +37,11 @@ if [[ "$proxied" != "false" && "$proxied" != "true" ]]; then
     exit 1
 fi
 
+if [[ "$auto_create_records" != "yes" && "$auto_create_records" != "no" ]]; then
+    log 'Error! Incorrect "auto_create_records" parameter, choose "yes" or "no"'
+    exit 1
+fi
+
 # Check if IPv6 is enabled
 ipv6_enabled=$([ "$enable_ipv6" == "yes" ] && echo true || echo false)
 
@@ -109,6 +114,37 @@ update_dns_record() {
         return 1
     fi
 
+    # Check if the record exists
+    local record_exists
+    record_exists=$(echo "$cloudflare_record_info" | grep -q '"result":\[\]' && echo "false" || echo "true")
+
+    if [ "$record_exists" == "false" ]; then
+        if [ "$auto_create_records" == "no" ]; then
+            log "==> DNS $type record for $record does not exist. Skipping (auto_create_records is disabled)."
+            return 0
+        fi
+        
+        log "==> DNS $type record for $record does not exist. Creating..."
+        
+        # Create new DNS record
+        if ! curl -s -X POST "https://api.cloudflare.com/client/v4/zones/$zoneid/dns_records" \
+            -H "Authorization: Bearer $cloudflare_zone_api_token" \
+            -H "Content-Type: application/json" \
+            --data "{\"type\":\"$type\",\"name\":\"$record\",\"content\":\"$ip\",\"ttl\":$ttl,\"proxied\":$proxied}" | grep -q '"success":true'; then
+            log "Error! Failed to create DNS record for $record ($type)"
+            return 1
+        fi
+
+        log "==> Success!"
+        log "==> Created new DNS $type Record for $record with IP: $ip, ttl: $ttl, proxied: $proxied"
+
+        # Telegram notification
+        if [ "${notify_me_telegram:-no}" == "yes" ]; then
+            send_telegram_notification "$record" "$type" "$ip" "created"
+        fi
+        return 0
+    fi
+
     # Get the current IP and proxy status from the API response
     local current_ip
     current_ip=$(echo "$cloudflare_record_info" | json_extract "content")
@@ -141,7 +177,7 @@ update_dns_record() {
 
     # Telegram notification
     if [ "${notify_me_telegram:-no}" == "yes" ]; then
-        send_telegram_notification "$record" "$type" "$ip"
+        send_telegram_notification "$record" "$type" "$ip" "updated"
     fi
 }
 
@@ -150,10 +186,11 @@ send_telegram_notification() {
     local record=$1
     local type=$2
     local ip=$3
+    local action=${4:-"updated"}  # Default to "updated" for backward compatibility
 
     if ! curl -s -X POST "https://api.telegram.org/bot${telegram_bot_API_Token}/sendMessage" \
         -H "Content-Type: application/json" \
-        --data "{\"chat_id\":\"${telegram_chat_id}\",\"text\":\"${record} DNS ${type} record updated to: ${ip}\"}" | grep -q '"ok":true'; then
+        --data "{\"chat_id\":\"${telegram_chat_id}\",\"text\":\"${record} DNS ${type} record ${action} to: ${ip}\"}" | grep -q '"ok":true'; then
         log "Error! Telegram notification failed for $record ($type)"
     fi
 }
