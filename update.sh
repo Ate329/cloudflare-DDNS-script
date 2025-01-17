@@ -13,6 +13,16 @@ log_info() { echo -e "${GREEN}[INFO]${NC} $1"; }
 log_warn() { echo -e "${YELLOW}[WARN]${NC} $1"; }
 log_error() { echo -e "${RED}[ERROR]${NC} $1"; }
 
+# Temporary files cleanup
+declare -a TEMP_FILES=()
+cleanup_temp_files() {
+    if [ ${#TEMP_FILES[@]} -gt 0 ]; then
+        for file in "${TEMP_FILES[@]}"; do
+            [ -f "$file" ] && rm -f "$file"
+        done
+    fi
+}
+
 # Check if git is installed
 if ! command -v git &> /dev/null; then
     log_error "git is not installed. Please install git first."
@@ -25,37 +35,53 @@ SCRIPT_PATH="${BASH_SOURCE[0]}"
 cd "$SCRIPT_DIR"
 
 # Create backup directory with timestamp and pid for uniqueness
-BACKUP_DIR="${SCRIPT_DIR}/backups/$(date +%Y%m%d_%H%M%S)_$$"
-mkdir -p "$BACKUP_DIR"
+BACKUP_DIR=$(mktemp -d "${SCRIPT_DIR}/backups/$(date +%Y%m%d_%H%M%S)_XXXXXX") || {
+    log_error "Failed to create backup directory"
+    exit 1
+}
 
 # Trap for cleanup on script exit
 cleanup() {
     local exit_code=$?
+    cleanup_temp_files
     # If we have stashed changes and haven't restored them
     if [ -f "${BACKUP_DIR}/.stashed" ] && [ ! -f "${BACKUP_DIR}/.stash_restored" ]; then
-        log_warn "Script interrupted. Attempting to restore stashed changes..."
+        log_warn "Update interrupted. Attempting to restore your local changes..."
         if git stash pop; then
-            log_info "Stashed changes restored."
+            log_info "Your local changes have been restored."
         else
-            log_error "Failed to restore stashed changes. They remain in the stash."
-            log_info "You can restore them manually with: git stash pop"
+            log_error "Failed to restore your local changes."
+            log_info "Your changes are saved and can be restored manually with: git stash pop"
         fi
     fi
     exit $exit_code
 }
 trap cleanup EXIT
 
+# Function to add temporary file for cleanup
+add_temp_file() {
+    TEMP_FILES+=("$1")
+}
+
 # Function to create backup
 create_backup() {
     log_info "Creating backup of current configuration..."
+    local failed=0
+    
     if [ -f cloudflare-dns-update.conf ]; then
-        cp -p cloudflare-dns-update.conf "$BACKUP_DIR/"
+        cp -p cloudflare-dns-update.conf "$BACKUP_DIR/" || failed=1
     fi
     if [ -f cloudflare-dns-update.log ]; then
-        cp -p cloudflare-dns-update.log "$BACKUP_DIR/"
+        cp -p cloudflare-dns-update.log "$BACKUP_DIR/" || failed=1
     fi
     # Backup the update script itself
-    cp -p "$SCRIPT_PATH" "$BACKUP_DIR/"
+    cp -p "$SCRIPT_PATH" "$BACKUP_DIR/" || failed=1
+    
+    if [ $failed -eq 1 ]; then
+        log_error "Failed to create complete backup"
+        return 1
+    fi
+    
     log_info "Backup created in: $BACKUP_DIR"
     return 0
 }
@@ -63,16 +89,23 @@ create_backup() {
 # Function to restore from backup
 restore_from_backup() {
     local backup_dir=$1
+    local failed=0
+    
     log_info "Restoring from backup: $backup_dir"
     if [ -f "$backup_dir/cloudflare-dns-update.conf" ]; then
-        cp -p "$backup_dir/cloudflare-dns-update.conf" ./cloudflare-dns-update.conf
+        cp -p "$backup_dir/cloudflare-dns-update.conf" ./cloudflare-dns-update.conf || failed=1
     fi
     if [ -f "$backup_dir/cloudflare-dns-update.log" ]; then
-        cp -p "$backup_dir/cloudflare-dns-update.log" ./cloudflare-dns-update.log
+        cp -p "$backup_dir/cloudflare-dns-update.log" ./cloudflare-dns-update.log || failed=1
     fi
     if [ -f "$backup_dir/update.sh" ]; then
-        cp -p "$backup_dir/update.sh" ./update.sh
-        chmod +x ./update.sh
+        cp -p "$backup_dir/update.sh" ./update.sh || failed=1
+        chmod +x ./update.sh || failed=1
+    fi
+    
+    if [ $failed -eq 1 ]; then
+        log_error "Failed to restore complete backup"
+        return 1
     fi
     return 0
 }
@@ -222,14 +255,19 @@ merge_configs() {
 cleanup_old_backups() {
     local max_backups=10  # Keep last 10 backups
     local backup_count
+    local backup_dirs
     
-    # Only count directories that match our timestamp_pid pattern
-    backup_count=$(find "${SCRIPT_DIR}/backups/" -maxdepth 1 -type d -name "[0-9]*_[0-9]*" 2>/dev/null | wc -l)
+    # Only count directories that match our timestamp pattern
+    backup_dirs=$(find "${SCRIPT_DIR}/backups/" -maxdepth 1 -type d -name "[0-9]*_*" 2>/dev/null) || return 0
+    backup_count=$(echo "$backup_dirs" | wc -l)
     
     if [ "$backup_count" -gt "$max_backups" ]; then
         log_info "Cleaning up old backups..."
-        find "${SCRIPT_DIR}/backups/" -maxdepth 1 -type d -name "[0-9]*_[0-9]*" -printf "%T@ %p\n" | \
-            sort -n | head -n -${max_backups} | cut -d' ' -f2- | xargs rm -rf
+        echo "$backup_dirs" | xargs -d '\n' stat --format '%Y %n' 2>/dev/null | \
+            sort -n | head -n -${max_backups} | cut -d' ' -f2- | \
+            while read -r dir; do
+                [ -d "$dir" ] && rm -rf "$dir"
+            done
     fi
     return 0
 }
@@ -286,32 +324,37 @@ fi
 
 # Check for uncommitted changes
 if ! git diff --quiet || ! git diff --cached --quiet; then
-    log_warn "You have uncommitted changes"
-    read -p "Do you want to stash them and continue? [y/N] " -n 1 -r
+    log_warn "You have local changes to your configuration"
+    read -p "Do you want to temporarily save these changes and continue? [y/N] " -n 1 -r
     echo
     if [[ ! $REPLY =~ ^[Yy]$ ]]; then
         exit 1
     fi
-    log_info "Stashing local changes..."
+    log_info "Saving your local changes..."
     if git stash; then
         touch "${BACKUP_DIR}/.stashed"
     else
-        log_error "Failed to stash changes"
+        log_error "Failed to save local changes"
         exit 1
     fi
 fi
 
-# Fetch updates first to check if they exist
+# Fetch updates once at the beginning
 log_info "Checking for updates..."
-git fetch origin main
+if ! git fetch origin main; then
+    log_error "Failed to fetch updates. Please check your internet connection."
+    exit 1
+fi
 
 # Check if we're behind origin/main
-if [ "$(git rev-list HEAD..origin/main --count)" -eq 0 ]; then
+COMMITS_BEHIND=$(git rev-list HEAD..origin/main --count)
+if [ "$COMMITS_BEHIND" -eq 0 ]; then
     # Even if there are no git updates, we should check if the config needs updating
     if [ -f cloudflare-dns-update.conf ]; then
         log_info "Checking if configuration needs updating..."
         # Create temporary copy of current config for comparison
         cp cloudflare-dns-update.conf cloudflare-dns-update.conf.current
+        add_temp_file "cloudflare-dns-update.conf.current"
         # Try merging to see if there are differences
         if merge_configs cloudflare-dns-update.conf.current cloudflare-dns-update.conf > /dev/null 2>&1; then
             log_info "Configuration is up to date."
@@ -320,27 +363,23 @@ if [ "$(git rev-list HEAD..origin/main --count)" -eq 0 ]; then
             # Actual merge with the real file
             merge_configs cloudflare-dns-update.conf cloudflare-dns-update.conf
         fi
-        rm -f cloudflare-dns-update.conf.current
     fi
     log_info "Already up to date."
     exit 0
 fi
 
-# Update from git
-log_info "Fetching updates from repository..."
-
-# First, check if update.sh will be modified
-git fetch origin main
-if ! git diff --name-only HEAD..origin/main | grep -q "^update.sh$"; then
+# Check if update.sh will be modified
+if git diff --name-only HEAD..origin/main | grep -q "^update.sh$"; then
     UPDATE_SCRIPT_CHANGED=1
 else
     UPDATE_SCRIPT_CHANGED=0
 fi
 
-if [ $UPDATE_SCRIPT_CHANGED -eq 0 ]; then
+if [ $UPDATE_SCRIPT_CHANGED -eq 1 ]; then
     log_info "Update script needs updating. Updating it first..."
     # Temporarily save the update script
     cp -p update.sh update.sh.updating
+    add_temp_file "update.sh.updating"
     
     # Pull only the update script
     if ! git checkout origin/main -- update.sh; then
@@ -359,11 +398,15 @@ if [ $UPDATE_SCRIPT_CHANGED -eq 0 ]; then
     chmod +x update.sh
     
     log_info "Update script has been updated. Restarting update process..."
-    rm -f update.sh.updating
     
-    # Execute the new update script and exit
-    exec ./update.sh
-    exit $?
+    # Execute the new update script and exit, but prevent infinite loop
+    if [ -z "${UPDATE_SCRIPT_RESTARTED:-}" ]; then
+        export UPDATE_SCRIPT_RESTARTED=1
+        exec ./update.sh
+        exit $?
+    else
+        log_warn "Update script has been updated multiple times. Proceeding with current version."
+    fi
 fi
 
 # If we get here, the update script doesn't need updating, proceed with normal updates
@@ -385,52 +428,17 @@ if [ -f "$BACKUP_DIR/cloudflare-dns-update.conf" ] && [ -f cloudflare-dns-update
     
     # Create temporary copy of new config
     cp cloudflare-dns-update.conf cloudflare-dns-update.conf.new
+    add_temp_file "cloudflare-dns-update.conf.new"
     
     # Restore user's config for merging
     cp "$BACKUP_DIR/cloudflare-dns-update.conf" ./cloudflare-dns-update.conf
     
-    # If we have stashed changes and the config was modified, we need special handling
-    if [ -f "${BACKUP_DIR}/.stashed" ]; then
-        # Save current index state
-        git stash push -m "Temporary stash for config merge"
-        
-        # Try to apply original stashed changes
-        if ! git stash apply stash@{1}; then
-            log_warn "Could not apply original changes automatically"
-            git stash pop stash@{0}  # Restore current state
-            log_info "Your original changes are in stash@{0}, please merge them manually"
-            rm -f "${BACKUP_DIR}/.stashed"  # Prevent further stash operations
-        else
-            # Now we have the original changes applied
-            # Save the current state of the config
-            cp cloudflare-dns-update.conf cloudflare-dns-update.conf.original
-            
-            # Pop the temporary stash to get back to our state
-            git stash pop
-            
-            # Now merge the configs
-            if ! merge_configs cloudflare-dns-update.conf cloudflare-dns-update.conf.new; then
-                log_error "Failed to merge configuration files"
-                cp cloudflare-dns-update.conf.original cloudflare-dns-update.conf
-                rm -f cloudflare-dns-update.conf.new cloudflare-dns-update.conf.original
-                restore_from_backup "$BACKUP_DIR"
-                exit 1
-            fi
-            
-            rm -f cloudflare-dns-update.conf.original
-        fi
-    else
-        # Normal merge without stashed changes
-        if ! merge_configs cloudflare-dns-update.conf cloudflare-dns-update.conf.new; then
-            log_error "Failed to merge configuration files"
-            restore_from_backup "$BACKUP_DIR"
-            rm -f cloudflare-dns-update.conf.new
-            exit 1
-        fi
+    # Normal merge without stashed changes
+    if ! merge_configs cloudflare-dns-update.conf cloudflare-dns-update.conf.new; then
+        log_error "Failed to merge configuration files"
+        restore_from_backup "$BACKUP_DIR"
+        exit 1
     fi
-    
-    # Cleanup temporary file
-    rm -f cloudflare-dns-update.conf.new
 fi
 
 # Restore log file if needed
@@ -440,7 +448,13 @@ if [ -f "$BACKUP_DIR/cloudflare-dns-update.log" ]; then
 fi
 
 # Make scripts executable
-chmod +x cloudflare-dns-update.sh update.sh
+for script in cloudflare-dns-update.sh update.sh; do
+    if ! chmod +x "$script"; then
+        log_error "Failed to make $script executable"
+        restore_from_backup "$BACKUP_DIR"
+        exit 1
+    fi
+done
 
 # Verify script integrity after update
 if ! verify_file update.sh || ! verify_file cloudflare-dns-update.sh; then
@@ -468,13 +482,13 @@ fi
 
 # Pop stashed changes if any
 if [ -f "${BACKUP_DIR}/.stashed" ]; then
-    log_info "Restoring local changes..."
+    log_info "Restoring your saved local changes..."
     if git stash pop; then
         touch "${BACKUP_DIR}/.stash_restored"
-        log_info "Local changes restored successfully"
+        log_info "Your local changes have been restored successfully"
     else
-        log_error "Failed to restore local changes. Please resolve conflicts manually."
-        log_info "Your changes are still in the stash and can be restored with 'git stash pop'"
+        log_error "Failed to restore your local changes automatically."
+        log_info "Your changes are saved and can be restored manually with: git stash pop"
         # Don't exit with error since the update itself was successful
     fi
 fi
