@@ -462,9 +462,6 @@ if [ "$current_branch" != "main" ]; then
     fi
 fi
 
-# Check for uncommitted changes before any git operations
-handle_local_changes
-
 # Check if we're behind origin/main
 COMMITS_BEHIND=$(git rev-list HEAD..origin/main --count)
 if [ "$COMMITS_BEHIND" -eq 0 ]; then
@@ -486,6 +483,9 @@ if [ "$COMMITS_BEHIND" -eq 0 ]; then
     log_info "Already up to date."
     exit 0
 fi
+
+# Only check for local changes if we actually need to update
+handle_local_changes
 
 # If we get here, the update script doesn't need updating, proceed with normal updates
 if ! git pull origin main; then
