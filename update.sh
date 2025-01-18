@@ -81,13 +81,9 @@ if git diff --name-only HEAD..origin/main | grep -q "^update.sh$"; then
     fi
     
     # Update git's state to recognize the new script
-    git add update.sh
-    git reset HEAD update.sh
+    git checkout -- update.sh
     
     log_info "Update script has been updated. Proceeding with remaining updates..."
-    
-    # Continue with the current script (no restart needed)
-    # The script is already replaced, and git state is updated
 fi
 
 # Temporary files cleanup
