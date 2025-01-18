@@ -581,14 +581,23 @@ if [ "$do_backup" = true ] || [ -n "$restore_file" ]; then
     fi
 fi
 
+# Process backup/restore operations if requested
 if [ "$do_backup" = true ]; then
     backup_dns_records
-    exit $?
+    backup_status=$?
+    if [ $backup_status -eq 0 ]; then
+        log "==> Script finished"
+    fi
+    exit $backup_status
 fi
 
 if [ -n "$restore_file" ]; then
     restore_dns_records "$restore_file"
-    exit $?
+    restore_status=$?
+    if [ $restore_status -eq 0 ]; then
+        log "==> Script finished"
+    fi
+    exit $restore_status
 fi
 
 # Process each zone and its domains
