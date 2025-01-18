@@ -149,8 +149,16 @@ cleanup_logs() {
 ### Function to cleanup old DNS backups
 cleanup_dns_backups() {
     local max_backups=$1
-    local backup_dir="${parent_path}"
+    local backup_dir="${parent_path}/dns_backups"
     local backup_pattern="dns_backup_*.json"
+    
+    # Create backup directory if it doesn't exist
+    if [ ! -d "$backup_dir" ]; then
+        mkdir -p "$backup_dir" || {
+            log "Error! Failed to create DNS backups directory"
+            return 1
+        }
+    }
     
     # Only proceed if we have more backups than the limit
     local backup_count
@@ -169,10 +177,20 @@ cleanup_dns_backups() {
 
 ### Function to backup DNS records
 backup_dns_records() {
-    local backup_file="${parent_path}/dns_backup_$(date +%Y%m%d_%H%M%S).json"
+    local backup_dir="${parent_path}/dns_backups"
+    local backup_file="${backup_dir}/dns_backup_$(date +%Y%m%d_%H%M%S).json"
     local temp_file
     temp_file=$(mktemp)
     local success=true
+
+    # Create backup directory if it doesn't exist
+    if [ ! -d "$backup_dir" ]; then
+        mkdir -p "$backup_dir" || {
+            log "Error! Failed to create DNS backups directory"
+            rm -f "$temp_file"
+            return 1
+        }
+    }
 
     log "==> Starting DNS records backup..."
     echo "{" > "$temp_file"
@@ -215,7 +233,7 @@ backup_dns_records() {
             cleanup_dns_backups "$max_dns_backups"
         fi
     else
-        rm "$temp_file"
+        rm -f "$temp_file"
         log "Error! Backup failed"
         return 1
     fi
@@ -225,6 +243,11 @@ backup_dns_records() {
 restore_dns_records() {
     local backup_file="$1"
     local success=true
+
+    # If backup_file doesn't contain a path, look in the dns_backups directory
+    if [[ "$backup_file" != *"/"* ]]; then
+        backup_file="${parent_path}/dns_backups/$backup_file"
+    fi
 
     if [ ! -f "$backup_file" ]; then
         log "Error! Backup file not found: $backup_file"

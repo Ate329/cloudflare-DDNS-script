@@ -81,7 +81,9 @@ The update process includes several safety measures:
 
 ### Backup System
 
-The script maintains backups in the `./backups/` directory with the following structure:
+The script maintains two types of backups in separate directories:
+
+1. Update script backups in `./backups/`:
 ```
 backups/
 ├── YYYYMMDD_HHMMSS_PID/  (most recent)
@@ -93,7 +95,22 @@ backups/
 └── ...
 ```
 
-The number of backups kept is configurable through the `max_update_backups` setting in your configuration file (default: 10). Each backup is stored in a timestamped directory with a unique process ID for easy identification and recovery.
+2. DNS record backups in `./dns_backups/`:
+```
+dns_backups/
+├── dns_backup_20240101_120000.json  (most recent)
+├── dns_backup_20240101_115500.json
+├── dns_backup_20240101_115000.json
+└── ...
+```
+
+The number of backups kept in each directory is configurable through:
+- `max_update_backups` setting for update script backups (default: 10)
+- `max_dns_backups` setting for DNS record backups (default: 10)
+
+Each backup type serves a different purpose:
+- Update script backups preserve your configuration and scripts during updates
+- DNS record backups store your DNS records for disaster recovery
 
 ### Update Troubleshooting
 
@@ -153,7 +170,11 @@ The script can be run in several ways:
 
 4. Restore from backup:
    ```bash
+   # Restore using relative path (will look in dns_backups directory)
    ./cloudflare-dns-update.sh --restore dns_backup_20240101_120000.json
+
+   # Or using absolute/custom path
+   ./cloudflare-dns-update.sh --restore /path/to/backup/dns_backup_20240101_120000.json
    ```
 
 ### Automatic Updates
@@ -294,13 +315,14 @@ This is where you can get your API Tokens: https://dash.cloudflare.com/profile/a
    - Some services may require direct access (set to false for these)
 
 5. **Backup Management**
-   - Two types of backups are maintained:
-     - Update script backups: controlled by `max_update_backups`
-     - DNS record backups: controlled by `max_dns_backups`
+   - Two types of backups are maintained in separate directories:
+     - Update script backups: in `./backups/`, controlled by `max_update_backups`
+     - DNS record backups: in `./dns_backups/`, controlled by `max_dns_backups`
    - DNS backups are stored in JSON format with timestamps
-   - Each backup includes all DNS records for configured domains
+   - Each DNS backup includes all DNS records for configured domains
    - Backups are automatically cleaned up based on these settings
    - DNS backups can be restored using the `--restore` option
+   - When restoring, you can use either the filename (looks in `dns_backups/`) or full path
 
 6. **Log Management**
    - Set `log_cleanup_days` to control log retention
