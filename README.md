@@ -234,6 +234,7 @@ dns_record_ipv6=""  # Only used if use_same_record_for_ipv6 is set to "no"
 ttl=1  # Or any value between 120 and 7200 (1 for automatic)
 proxied=false  # Or true
 auto_create_records="yes"  # Set to "no" to skip creating non-existent records
+max_dns_backups=10  # Number of DNS record backups to keep (default: 10)
 ```
 
 ### Error Handling Settings
@@ -293,9 +294,13 @@ This is where you can get your API Tokens: https://dash.cloudflare.com/profile/a
    - Some services may require direct access (set to false for these)
 
 5. **Backup Management**
-   - Adjust `max_update_backups` based on your needs
-   - Each backup includes configuration, logs, and scripts
-   - Backups are automatically cleaned up based on this setting
+   - Two types of backups are maintained:
+     - Update script backups: controlled by `max_update_backups`
+     - DNS record backups: controlled by `max_dns_backups`
+   - DNS backups are stored in JSON format with timestamps
+   - Each backup includes all DNS records for configured domains
+   - Backups are automatically cleaned up based on these settings
+   - DNS backups can be restored using the `--restore` option
 
 6. **Log Management**
    - Set `log_cleanup_days` to control log retention

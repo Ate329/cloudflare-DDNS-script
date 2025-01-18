@@ -146,6 +146,27 @@ cleanup_logs() {
     fi
 }
 
+### Function to cleanup old DNS backups
+cleanup_dns_backups() {
+    local max_backups=$1
+    local backup_dir="${parent_path}"
+    local backup_pattern="dns_backup_*.json"
+    
+    # Only proceed if we have more backups than the limit
+    local backup_count
+    backup_count=$(find "$backup_dir" -maxdepth 1 -name "$backup_pattern" | wc -l)
+    
+    if [ "$backup_count" -gt "$max_backups" ]; then
+        log "==> Cleaning up old DNS backups (keeping last $max_backups)..."
+        find "$backup_dir" -maxdepth 1 -name "$backup_pattern" -printf "%T@ %p\n" | \
+            sort -n | head -n -"$max_backups" | cut -d' ' -f2- | \
+            while read -r backup; do
+                rm -f "$backup"
+                log_to_file "==> Removed old DNS backup: $backup"
+            done
+    fi
+}
+
 ### Function to backup DNS records
 backup_dns_records() {
     local backup_file="${parent_path}/dns_backup_$(date +%Y%m%d_%H%M%S).json"
@@ -188,6 +209,11 @@ backup_dns_records() {
     if [ "$success" = true ]; then
         mv "$temp_file" "$backup_file"
         log "==> DNS records backed up to: $backup_file"
+        
+        # Cleanup old backups if max_dns_backups is set
+        if [ -n "${max_dns_backups:-}" ] && [ "$max_dns_backups" -gt 0 ]; then
+            cleanup_dns_backups "$max_dns_backups"
+        fi
     else
         rm "$temp_file"
         log "Error! Backup failed"
