@@ -488,7 +488,6 @@ merge_configs() {
 
     # Move temp file to final location
     if [ "$has_new_options" = true ]; then
-        log_info "New configuration options have been added to your config file"
         # Create a copy for review first
         cp -p "$temp_file" "${user_config}.new" || {
             log_error "Failed to create review copy of merged configuration."
@@ -503,10 +502,8 @@ merge_configs() {
             rm -f "$temp_file"
             return 1
         fi
-        log_info "A copy of the new configuration has been saved as ${user_config}.new for review"
         return 0
     else
-        log_info "No new configuration options found"
         rm -f "$temp_file"
         return 0
     fi
@@ -615,18 +612,17 @@ if [ "$COMMITS_BEHIND" -eq 0 ]; then
         fi
         add_temp_file "cloudflare-dns-update.conf.template"
 
-        # Create a backup before attempting merge
-        if ! create_backup; then
-            log_error "Failed to create backup before config merge"
-            exit 1
-        fi
-
         # Try merging to see if there are differences
         if merge_configs cloudflare-dns-update.conf cloudflare-dns-update.conf.template; then
-            log_info "Configuration is up to date."
+            if [ -f "${user_config}.new" ]; then
+                log_info "Configuration has been updated with new options"
+                log_info "Please review the changes in ${user_config}.new"
+            else
+                log_info "Configuration is up to date"
+            fi
         else
-            log_warn "Configuration file needs updating despite no git changes."
-            # Restore from backup and try merge again
+            log_warn "Failed to update configuration"
+            # Restore from backup
             if ! restore_from_backup "$BACKUP_DIR"; then
                 log_error "Failed to restore from backup after merge failure"
                 exit 1
@@ -638,7 +634,7 @@ if [ "$COMMITS_BEHIND" -eq 0 ]; then
             fi
         fi
     fi
-    log_info "Already up to date."
+    log_info "No updates required"
     exit 0
 fi
 
