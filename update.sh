@@ -315,6 +315,7 @@ merge_configs() {
     # Read user's current settings into associative array
     declare -A user_settings
     declare -A user_comments
+    declare -A seen_sections
     local current_section=""
     local last_comment=""
     
@@ -329,6 +330,7 @@ merge_configs() {
         # Handle section headers
         if [[ "$line" =~ ^###[[:space:]]*(.*)[[:space:]]*$ ]]; then
             current_section="${BASH_REMATCH[1]}"
+            seen_sections["$current_section"]=1
             [ -n "$last_comment" ] && user_comments["section_$current_section"]="$last_comment"
             last_comment=""
             continue
@@ -369,7 +371,8 @@ merge_configs() {
             # Add newline before sections (except first)
             [ "$first_section" = true ] || echo "" >> "$temp_file"
             first_section=false
-            # Use user's section comment if exists, otherwise use template comment
+            
+            # Only output section header and comments once
             if [ -n "${user_comments["section_$current_section"]:-}" ]; then
                 echo "${user_comments["section_$current_section"]}" >> "$temp_file"
             elif [ -n "$last_comment" ]; then
