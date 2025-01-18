@@ -1,5 +1,11 @@
 #!/usr/bin/env bash
 
+# Ensure the script is running with bash
+if [ -z "$BASH_VERSION" ]; then
+    echo "Error: This script must be run with bash."
+    exit 1
+fi
+
 set -euo pipefail
 
 # Colors for output
@@ -85,9 +91,12 @@ if git diff --name-only HEAD..origin/main | grep -q "^update.sh$"; then
     git add update.sh
     
     log_info "Update script has been updated. Proceeding with remaining updates..."
-
-    # Execute the updated script in a new process to ensure changes are applied
-    exec bash "$SCRIPT_PATH"
+    
+    # Prevent infinite recursion by checking an environment variable
+    if [ -z "${REEXECED:-}" ]; then
+        export REEXECED=1
+        exec bash "$SCRIPT_PATH"
+    fi
 fi
 
 # Temporary files cleanup
