@@ -85,6 +85,9 @@ if git diff --name-only HEAD..origin/main | grep -q "^update.sh$"; then
     git add update.sh
     
     log_info "Update script has been updated. Proceeding with remaining updates..."
+
+    # Execute the updated script in a new process to ensure changes are applied
+    exec bash "$SCRIPT_PATH"
 fi
 
 # Temporary files cleanup
