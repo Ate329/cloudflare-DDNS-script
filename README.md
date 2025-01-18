@@ -14,6 +14,8 @@ cloudflare-DDNS-script is a Bash script that automatically updates Cloudflare DN
 - Command-line options for configuration overrides
 - Detailed logging with automatic cleanup of old entries
 - Detailed logging for easy troubleshooting (including API responses)
+- Robust update system with automatic backups and configuration merging
+- Safe handling of local changes during updates
 
 ## Prerequisites
 
@@ -50,7 +52,7 @@ The script includes a robust update mechanism that preserves your configuration 
 
 The update script will:
 - Create a timestamped backup of your current configuration, log files, and the update script itself
-- Maintain a history of the last 10 backups for safety (stored in `./backups/`)
+- Maintain a configurable history of backups (default: 10) for safety
 - Check if you're in a git repository and on the main branch
 - Check for any local changes and offer to stash them safely
 - Verify the git repository and remote configuration
@@ -74,6 +76,8 @@ The update process includes several safety measures:
 - File integrity is verified at multiple steps
 - Backup directory names include timestamps and process IDs to prevent conflicts
 - The update script updates itself first to ensure the latest update logic is used
+- Configuration merging preserves all user customizations and comments
+- Automatic rollback on failure
 
 ### Backup System
 
@@ -89,7 +93,7 @@ backups/
 └── ...
 ```
 
-By default, only the last 10 backups are kept to prevent excessive disk usage. You can adjust this number by setting `max_update_backups` in your configuration file. Each backup is stored in a timestamped directory with a unique process ID for easy identification and recovery.
+The number of backups kept is configurable through the `max_update_backups` setting in your configuration file (default: 10). Each backup is stored in a timestamped directory with a unique process ID for easy identification and recovery.
 
 ### Update Troubleshooting
 
@@ -211,13 +215,17 @@ services.cron = {
 
 ## Configuration
 
-The configuration is in a file named `cloudflare-dns-update.conf`. Replace the placeholder values with your actual Cloudflare credentials:
+The configuration file `cloudflare-dns-update.conf` supports the following settings:
 
+### Domain Configurations
 ```bash
 ### Domain configurations
 # Format: domain_configs="zoneid1:domain1.com,domain2.com;zoneid2:domain3.com,domain4.com"
 domain_configs="your_cloudflare_zone_id1:example1.com,sub1.example1.com;your_cloudflare_zone_id2:example2.com,sub2.example2.com"
+```
 
+### Global Settings
+```bash
 ### Global settings
 cloudflare_zone_api_token="your_cloudflare_api_token"
 enable_ipv6="no"  # Set to "yes" to enable IPv6 updates
@@ -226,18 +234,30 @@ dns_record_ipv6=""  # Only used if use_same_record_for_ipv6 is set to "no"
 ttl=1  # Or any value between 120 and 7200 (1 for automatic)
 proxied=false  # Or true
 auto_create_records="yes"  # Set to "no" to skip creating non-existent records
+```
 
+### Error Handling Settings
+```bash
 ### Error handling settings
 max_retries=3  # Maximum number of retry attempts for failed API calls
 retry_delay=5  # Initial delay between retries in seconds (will increase exponentially)
 max_retry_delay=60  # Maximum delay between retries in seconds
+```
 
+### Log Settings
+```bash
 ### Log settings
 log_cleanup_days=7  # Number of days to keep logs (0 to disable cleanup)
+```
 
+### Update Script Settings
+```bash
 ### Update script settings
 max_update_backups=10  # Number of update backups to keep (default: 10)
+```
 
+### Telegram Notification Settings (Optional)
+```bash
 ### Telegram notification settings (optional)
 notify_telegram="no"  # Or "yes"
 telegram_bot_token="your_telegram_bot_token"  # If using Telegram notifications
@@ -247,31 +267,45 @@ telegram_chat_id="your_telegram_chat_id"  # If using Telegram notifications
 You can find your Zone IDs in the Cloudflare dashboard under the domain's overview page.
 
 This is where you can get your API Tokens: https://dash.cloudflare.com/profile/api-tokens   
-***You should get the API Tokens by clicking the "Create Token" button instead of the API Keys.   
-(API Tokens and keys are DIFFERENT)***
+***You should get the API Tokens by clicking the "Create Token" button instead of the API Keys.***
 
-### Configuration Options
+### Configuration Tips
 
-The script supports the following configuration options:
+1. **API Token Permissions**
+   - The API token needs the following permissions:
+     - Zone:Read (for listing zones)
+     - DNS:Edit (for managing DNS records)
+   - Create a custom token with these specific permissions for better security
 
-| Option | Values | Description |
-|--------|--------|-------------|
-| `domain_configs` | string | Semicolon-separated list of zone configurations |
-| `cloudflare_zone_api_token` | string | Your Cloudflare API token |
-| `enable_ipv6` | "yes"/"no" | Whether to update AAAA (IPv6) records |
-| `use_same_record_for_ipv6` | "yes"/"no" | Whether to use the same domain names for IPv6 records |
-| `dns_record_ipv6` | string | Comma-separated list of IPv6 domains |
-| `ttl` | 1 or 120-7200 | Time To Live in seconds (1 for automatic) |
-| `proxied` | true/false | Whether to proxy the DNS records through Cloudflare |
-| `auto_create_records` | "yes"/"no" | Whether to automatically create non-existent DNS records |
-| `max_retries` | integer | Maximum number of retry attempts for failed API calls |
-| `retry_delay` | integer | Initial delay between retries in seconds |
-| `max_retry_delay` | integer | Maximum delay between retries in seconds |
-| `log_cleanup_days` | integer | Number of days to keep log entries |
-| `max_update_backups` | integer | Number of update backups to keep (default: 10) |
-| `notify_telegram` | "yes"/"no" | Whether to send Telegram notifications |
-| `telegram_bot_token` | string | Your Telegram bot API token |
-| `telegram_chat_id` | string | Your Telegram chat ID |
+2. **IPv6 Configuration**
+   - Enable IPv6 only if your network supports it
+   - When using the same record for IPv6, the script will update both A and AAAA records
+   - For different IPv6 records, specify the record name in `dns_record_ipv6`
+
+3. **TTL Settings**
+   - Use `ttl=1` for automatic TTL management by Cloudflare
+   - For custom TTL, use values between 120 and 7200 seconds
+   - Lower TTL values mean faster propagation but more DNS queries
+
+4. **Proxy Settings**
+   - Set `proxied=true` to enable Cloudflare's proxy features (recommended)
+   - This enables DDoS protection, caching, and other Cloudflare features
+   - Some services may require direct access (set to false for these)
+
+5. **Backup Management**
+   - Adjust `max_update_backups` based on your needs
+   - Each backup includes configuration, logs, and scripts
+   - Backups are automatically cleaned up based on this setting
+
+6. **Log Management**
+   - Set `log_cleanup_days` to control log retention
+   - Set to 0 to disable automatic log cleanup
+   - Logs include detailed API responses for troubleshooting
+
+7. **Error Handling**
+   - Adjust retry settings based on your network reliability
+   - `max_retries` controls how many times to retry failed operations
+   - Retry delay increases exponentially up to `max_retry_delay`
 
 ## Logging
 
