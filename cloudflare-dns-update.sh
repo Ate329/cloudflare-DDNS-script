@@ -158,7 +158,7 @@ cleanup_dns_backups() {
             log "Error! Failed to create DNS backups directory"
             return 1
         }
-    }
+    fi
     
     # Only proceed if we have more backups than the limit
     local backup_count
@@ -190,7 +190,7 @@ backup_dns_records() {
             rm -f "$temp_file"
             return 1
         }
-    }
+    fi
 
     log "==> Starting DNS records backup..."
     echo "{" > "$temp_file"
