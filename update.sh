@@ -642,13 +642,13 @@ if [ -f "$BACKUP_DIR/cloudflare-dns-update.conf" ] && [ -f cloudflare-dns-update
         exit 1
     fi
 
-    # Create temporary copy of new config
-    cp cloudflare-dns-update.conf cloudflare-dns-update.conf.new || {
-        log_error "Failed to create temporary config file for merging."
+    # Get the template config from the repository
+    if ! git show "origin/main:cloudflare-dns-update.conf" > "cloudflare-dns-update.conf.template"; then
+        log_error "Failed to get template configuration"
         restore_from_backup "$BACKUP_DIR"
         exit 1
-    }
-    add_temp_file "cloudflare-dns-update.conf.new"
+    fi
+    add_temp_file "cloudflare-dns-update.conf.template"
 
     # Restore user's config for merging
     cp "$BACKUP_DIR/cloudflare-dns-update.conf" ./cloudflare-dns-update.conf || {
@@ -666,8 +666,8 @@ if [ -f "$BACKUP_DIR/cloudflare-dns-update.conf" ] && [ -f cloudflare-dns-update
         }
     fi
 
-    # Merge configurations
-    if ! merge_configs cloudflare-dns-update.conf cloudflare-dns-update.conf.new; then
+    # Merge configurations using the template
+    if ! merge_configs cloudflare-dns-update.conf cloudflare-dns-update.conf.template; then
         log_error "Failed to merge configuration files"
         restore_from_backup "$BACKUP_DIR"
         exit 1
