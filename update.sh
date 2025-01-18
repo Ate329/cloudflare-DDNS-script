@@ -414,19 +414,11 @@ merge_configs() {
     # If we have new options, create a .new file for review and update the original
     if [ "$has_new_options" = true ]; then
         log_info "New configuration options have been added to your config file"
-        if ! cp -p "$temp_file" "${user_config}.new"; then
-            log_error "Failed to create review copy of merged configuration"
-            rm -f "$temp_file"
-            return 1
-        fi
-        add_temp_file "${user_config}.new"
-        
         if ! mv "$temp_file" "$user_config"; then
             log_error "Failed to apply merged configuration"
             rm -f "$temp_file"
             return 1
         fi
-        log_info "A copy of the new configuration has been saved as ${user_config}.new for review"
         return 0
     else
         log_info "No new configuration options found"
