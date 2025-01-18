@@ -496,6 +496,9 @@ check_main_branch() {
     fi
 }
 
+# Invoke branch check
+check_main_branch
+
 # Check if we're behind origin/main
 COMMITS_BEHIND=$(git rev-list HEAD..origin/main --count)
 if [ "$COMMITS_BEHIND" -eq 0 ]; then
