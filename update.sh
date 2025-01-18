@@ -32,6 +32,7 @@ TEMP_UPDATE_DIR=$(mktemp -d) || {
 
 # Cleanup temporary files on exit
 cleanup_temp() {
+    set +e
     [ -d "$TEMP_UPDATE_DIR" ] && rm -rf "$TEMP_UPDATE_DIR"
 }
 trap cleanup_temp EXIT
@@ -74,14 +75,14 @@ if git diff --name-only HEAD..origin/main | grep -q "^update.sh$"; then
     # Make the new script executable
     chmod +x "$TEMP_UPDATE_DIR/update.sh"
     
-    # Replace the old script with the new one
-    if ! cp -p "$TEMP_UPDATE_DIR/update.sh" "$SCRIPT_PATH"; then
+    # Replace the old script with the new one atomically
+    if ! mv "$TEMP_UPDATE_DIR/update.sh" "$SCRIPT_PATH"; then
         log_error "Failed to replace update script"
         exit 1
     fi
     
-    # Update git's state to recognize the new script
-    git checkout -- update.sh
+    # Stage the updated update.sh file
+    git add update.sh
     
     log_info "Update script has been updated. Proceeding with remaining updates..."
 fi
@@ -119,7 +120,7 @@ handle_local_changes() {
         # Check if there are changes other than update.sh
         local has_other_changes=0
         while IFS= read -r file; do
-            if [ "$file" != "update.sh" ]; then
+            if [ "${file}" != "update.sh" ]; then
                 has_other_changes=1
                 break
             fi
@@ -162,13 +163,14 @@ restore_stashed_changes() {
         else
             log_error "Failed to restore your local changes automatically."
             log_info "Your changes are saved and can be restored manually with: git stash pop"
-            # Don't exit with error since the update itself was successful
+            # Restore failed; do not alter CHANGES_STASHED
         fi
     fi
 }
 
-# Trap for cleanup on script exit
+# Function to cleanup on script exit
 cleanup() {
+    set +e
     local exit_code=$?
     cleanup_temp_files
     # Only try to restore stashed changes if they weren't restored already
@@ -181,22 +183,22 @@ trap cleanup EXIT
 
 # Function to add temporary file for cleanup
 add_temp_file() {
-    TEMP_FILES+=("$1")
+    if [[ ! " ${TEMP_FILES[@]} " =~ " $1 " ]]; then
+        TEMP_FILES+=("$1")
+    fi
 }
 
 # Function to create backup
 create_backup() {
     log_info "Creating backup of current configuration..."
     local failed=0
+    local files_to_backup=("cloudflare-dns-update.conf" "cloudflare-dns-update.log" "$SCRIPT_PATH")
     
-    if [ -f cloudflare-dns-update.conf ]; then
-        cp -p cloudflare-dns-update.conf "$BACKUP_DIR/" || failed=1
-    fi
-    if [ -f cloudflare-dns-update.log ]; then
-        cp -p cloudflare-dns-update.log "$BACKUP_DIR/" || failed=1
-    fi
-    # Backup the update script itself
-    cp -p "$SCRIPT_PATH" "$BACKUP_DIR/" || failed=1
+    for file in "${files_to_backup[@]}"; do
+        if [ -f "$file" ]; then
+            cp -p "$file" "$BACKUP_DIR/" || failed=1
+        fi
+    done
     
     if [ $failed -eq 1 ]; then
         log_error "Failed to create complete backup"
@@ -211,23 +213,49 @@ create_backup() {
 restore_from_backup() {
     local backup_dir=$1
     local failed=0
-    
+
     log_info "Restoring from backup: $backup_dir"
     if [ -f "$backup_dir/cloudflare-dns-update.conf" ]; then
-        cp -p "$backup_dir/cloudflare-dns-update.conf" ./cloudflare-dns-update.conf || failed=1
+        cp -p "$backup_dir/cloudflare-dns-update.conf" ./cloudflare-dns-update.conf || {
+            log_error "Failed to restore 'cloudflare-dns-update.conf' from backup."
+            failed=1
+        }
     fi
     if [ -f "$backup_dir/cloudflare-dns-update.log" ]; then
-        cp -p "$backup_dir/cloudflare-dns-update.log" ./cloudflare-dns-update.log || failed=1
+        cp -p "$backup_dir/cloudflare-dns-update.log" ./cloudflare-dns-update.log || {
+            log_error "Failed to restore 'cloudflare-dns-update.log' from backup."
+            failed=1
+        }
     fi
     if [ -f "$backup_dir/update.sh" ]; then
-        cp -p "$backup_dir/update.sh" ./update.sh || failed=1
-        chmod +x ./update.sh || failed=1
+        cp -p "$backup_dir/update.sh" ./update.sh || {
+            log_error "Failed to restore 'update.sh' from backup."
+            failed=1
+        }
+        chmod +x ./update.sh || {
+            log_error "Failed to set executable permission for 'update.sh' after restoration."
+            failed=1
+        }
     fi
-    
+
     if [ $failed -eq 1 ]; then
-        log_error "Failed to restore complete backup"
+        log_error "One or more files failed to restore from backup."
         return 1
     fi
+
+    # Ensure restored scripts have executable permissions
+    if [[ "$backup_dir/update.sh" == *.sh ]]; then
+        chmod +x ./update.sh || {
+            log_error "Failed to set executable permission for 'update.sh'."
+            failed=1
+        }
+    fi
+
+    if [ $failed -eq 1 ]; then
+        log_error "Failed to fully restore all files from backup."
+        return 1
+    fi
+    log_info "Backup restored successfully from: $backup_dir"
     return 0
 }
 
@@ -254,9 +282,11 @@ merge_configs() {
 
     # Verify input files exist and are readable
     if [ ! -f "$user_config" ] || [ ! -r "$user_config" ]; then
+        log_error "Merge failed: Unable to read user config file '$user_config'."
         return 1
     fi
     if [ ! -f "$new_config" ] || [ ! -r "$new_config" ]; then
+        log_error "Merge failed: Unable to read new config file '$new_config'."
         return 1
     fi
 
@@ -287,7 +317,11 @@ merge_configs() {
     done < "$user_config"
 
     # Create merged config starting with user's config
-    cp "$user_config" "$merged_config"
+    cp "$user_config" "$merged_config" || {
+        log_error "Failed to create merged config file."
+        return 1
+    }
+    add_temp_file "$merged_config"
 
     # Second pass: process new config and add new options in correct sections
     current_section=""
@@ -309,7 +343,7 @@ merge_configs() {
             if [ -n "$temp_section_content" ] && [ "$in_matching_section" = true ]; then
                 echo "$temp_section_content" >> "$merged_config"
             fi
-            
+
             current_section="${BASH_REMATCH[1]}"
             temp_section_content=""
             in_matching_section=false
@@ -332,12 +366,12 @@ merge_configs() {
         # Process options
         if [[ "$line" =~ ^([A-Za-z_][A-Za-z0-9_]*)= ]]; then
             key="${BASH_REMATCH[1]}"
-            
+
             # If option doesn't exist in user's config
             if [ -z "${options_added[$key]:-}" ]; then
                 has_new_options=true
                 log_warn "New option found: $key in section: $current_section"
-                
+
                 # Add to temporary section content
                 if [ -n "$temp_section_content" ]; then
                     temp_section_content+=$'\n'
@@ -359,7 +393,10 @@ merge_configs() {
     if [ "$has_new_options" = true ]; then
         log_info "New configuration options have been added to your config file"
         cp -p "$merged_config" "${user_config}.new"  # Create a new file for review
+        add_temp_file "${user_config}.new"
+
         if ! mv "$merged_config" "$user_config"; then
+            log_error "Failed to apply merged configuration."
             rm -f "$merged_config"
             return 1
         fi
@@ -376,25 +413,26 @@ merge_configs() {
 cleanup_old_backups() {
     local default_max_backups=10  # Default to keep last 10 backups
     local max_backups
-    
+
     # Try to get max_backups from config file, use default if not found or invalid
     if [ -f cloudflare-dns-update.conf ]; then
         max_backups=$(get_config_value cloudflare-dns-update.conf "max_update_backups")
-        # If empty or not a number, use default
-        if [ -z "$max_backups" ] || ! [[ "$max_backups" =~ ^[0-9]+$ ]]; then
+        # If empty, not a number, or not a positive integer, use default
+        if ! [[ "$max_backups" =~ ^[1-9][0-9]*$ ]]; then
+            log_warn "Invalid or missing 'max_update_backups' in config. Using default value: $default_max_backups"
             max_backups=$default_max_backups
         fi
     else
         max_backups=$default_max_backups
     fi
-    
+
     local backup_count
     local backup_dirs
-    
+
     # Only count directories that match our timestamp pattern
     backup_dirs=$(find "${SCRIPT_DIR}/backups/" -maxdepth 1 -type d -name "[0-9]*_*" 2>/dev/null) || return 0
     backup_count=$(echo "$backup_dirs" | wc -l)
-    
+
     if [ "$backup_count" -gt "$max_backups" ]; then
         log_info "Cleaning up old backups (keeping last $max_backups)..."
         echo "$backup_dirs" | xargs -d '\n' stat --format '%Y %n' 2>/dev/null | \
@@ -408,18 +446,29 @@ cleanup_old_backups() {
 
 # Function to verify file integrity
 verify_file() {
-    local file=$1
+    local file="$1"
     if [ ! -f "$file" ]; then
+        log_error "Verification failed: '${file}' does not exist."
         return 1
     fi
     if [ ! -r "$file" ]; then
+        log_error "Verification failed: '${file}' is not readable."
         return 1
     fi
     if [ ! -s "$file" ]; then
+        log_error "Verification failed: '${file}' is empty."
         return 1
     fi
-    if [ ! -x "$file" ] && [[ "$file" =~ \.(sh|bash)$ ]]; then
-        return 1
+    if [[ "$file" =~ \.(sh|bash)$ ]]; then
+        if [ ! -x "$file" ]; then
+            log_error "Verification failed: '${file}' is not executable."
+            return 1
+        fi
+        # Check for shebang
+        if ! grep -q "^#\!/" "$file"; then
+            log_error "Verification failed: '${file}' is missing a shebang (#!)."
+            return 1
+        fi
     fi
     return 0
 }
@@ -434,15 +483,18 @@ fi
 cleanup_old_backups
 
 # Check if we're on the main branch
-current_branch=$(git rev-parse --abbrev-ref HEAD)
-if [ "$current_branch" != "main" ]; then
-    log_warn "You are not on the main branch. Current branch: $current_branch"
-    read -p "Do you want to continue? [y/N] " -n 1 -r
-    echo
-    if [[ ! $REPLY =~ ^[Yy]$ ]]; then
-        exit 1
+check_main_branch() {
+    local current_branch
+    current_branch=$(git rev-parse --abbrev-ref HEAD)
+    if [ "$current_branch" != "main" ]; then
+        log_warn "You are not on the main branch. Current branch: $current_branch"
+        read -p "Do you want to continue? [y/N] " -n 1 -r
+        echo
+        if [[ ! $REPLY =~ ^[Yy]$ ]]; then
+            exit 1
+        fi
     fi
-fi
+}
 
 # Check if we're behind origin/main
 COMMITS_BEHIND=$(git rev-list HEAD..origin/main --count)
@@ -486,28 +538,47 @@ if [ -f "$BACKUP_DIR/cloudflare-dns-update.conf" ] && [ -f cloudflare-dns-update
         restore_from_backup "$BACKUP_DIR"
         exit 1
     fi
-    
+
     # Create temporary copy of new config
-    cp cloudflare-dns-update.conf cloudflare-dns-update.conf.new
+    cp cloudflare-dns-update.conf cloudflare-dns-update.conf.new || {
+        log_error "Failed to create temporary config file for merging."
+        restore_from_backup "$BACKUP_DIR"
+        exit 1
+    }
     add_temp_file "cloudflare-dns-update.conf.new"
-    
+
     # Add new option if it doesn't exist
     if ! grep -q "^max_update_backups=" cloudflare-dns-update.conf; then
         echo -e "\n### Update script settings" >> cloudflare-dns-update.conf
         echo "max_update_backups=10  # Number of update backups to keep (default: 10)" >> cloudflare-dns-update.conf
     fi
-    
+
     # Restore user's config for merging
-    cp "$BACKUP_DIR/cloudflare-dns-update.conf" ./cloudflare-dns-update.conf
-    
+    cp "$BACKUP_DIR/cloudflare-dns-update.conf" ./cloudflare-dns-update.conf || {
+        log_error "Failed to restore backup configuration for merging."
+        restore_from_backup "$BACKUP_DIR"
+        exit 1
+    }
+
     # Save any local changes to the config file before merging
     if [ -f "${BACKUP_DIR}/.stashed" ]; then
-        git stash save --keep-index "Temporary save of config changes during update" >/dev/null 2>&1
+        git stash save --keep-index "Temporary save of config changes during update" >/dev/null 2>&1 || {
+            log_error "Failed to stash local configuration changes."
+            restore_from_backup "$BACKUP_DIR"
+            exit 1
+        }
     fi
-    
+
     # Normal merge without stashed changes
     if ! merge_configs cloudflare-dns-update.conf cloudflare-dns-update.conf.new; then
         log_error "Failed to merge configuration files"
+        restore_from_backup "$BACKUP_DIR"
+        exit 1
+    fi
+
+    # Final verification of merged configuration
+    if ! verify_file cloudflare-dns-update.conf; then
+        log_error "Merged configuration file is invalid"
         restore_from_backup "$BACKUP_DIR"
         exit 1
     fi
