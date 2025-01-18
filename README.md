@@ -61,7 +61,7 @@ The update script will:
 - Intelligently merge any new configuration options while:
   - Preserving all your existing settings, comments, and file permissions
   - Adding new options in their correct sections with descriptive comments
-  - Creating a `.new` file for you to review any changes
+  - Maintaining proper section order and formatting
 - Restore your configuration and log files
 - Restore any stashed local changes
 - Verify the integrity of all updated files
@@ -76,8 +76,9 @@ The update process includes several safety measures:
 - File integrity is verified at multiple steps
 - Backup directory names include timestamps and process IDs to prevent conflicts
 - The update script updates itself first to ensure the latest update logic is used
-- Configuration merging preserves all user customizations and comments
+- Configuration merging preserves all user customizations, comments, and sections
 - Automatic rollback on failure
+- Handles new configuration sections and options seamlessly
 
 ### Backup System
 
@@ -130,8 +131,8 @@ Common issues and solutions:
    - Note: Stashed changes will be automatically restored after the update
 
 4. **Configuration Merge Issues**
-   - Issue: New configuration options not appearing in correct sections
-   - Solution: Check the `.new` file created during update and manually adjust if needed
+   - Issue: New configuration options or sections not appearing correctly
+   - Solution: The script will automatically merge new options while preserving your settings
    - Note: Your original configuration is always backed up before any changes
 
 5. **Update Script Modified**
