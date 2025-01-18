@@ -489,11 +489,18 @@ merge_configs() {
     # Move temp file to final location
     if [ "$has_new_options" = true ]; then
         log_info "New configuration options have been added to your config file"
-        cp -p "$temp_file" "${user_config}.new"  # Create a new file for review
+        # Create a copy for review first
+        cp -p "$temp_file" "${user_config}.new" || {
+            log_error "Failed to create review copy of merged configuration."
+            rm -f "$temp_file"
+            return 1
+        }
         add_temp_file "${user_config}.new"
 
+        # Now move the temp file to replace the user config
         if ! mv "$temp_file" "$user_config"; then
             log_error "Failed to apply merged configuration."
+            rm -f "$temp_file"
             return 1
         fi
         log_info "A copy of the new configuration has been saved as ${user_config}.new for review"
@@ -608,13 +615,27 @@ if [ "$COMMITS_BEHIND" -eq 0 ]; then
         fi
         add_temp_file "cloudflare-dns-update.conf.template"
 
+        # Create a backup before attempting merge
+        if ! create_backup; then
+            log_error "Failed to create backup before config merge"
+            exit 1
+        fi
+
         # Try merging to see if there are differences
-        if merge_configs cloudflare-dns-update.conf cloudflare-dns-update.conf.template > /dev/null 2>&1; then
+        if merge_configs cloudflare-dns-update.conf cloudflare-dns-update.conf.template; then
             log_info "Configuration is up to date."
         else
             log_warn "Configuration file needs updating despite no git changes."
-            # Actual merge with the real file
-            merge_configs cloudflare-dns-update.conf cloudflare-dns-update.conf.template
+            # Restore from backup and try merge again
+            if ! restore_from_backup "$BACKUP_DIR"; then
+                log_error "Failed to restore from backup after merge failure"
+                exit 1
+            fi
+            # Attempt merge again with restored config
+            if ! merge_configs cloudflare-dns-update.conf cloudflare-dns-update.conf.template; then
+                log_error "Failed to merge configuration files after restore"
+                exit 1
+            fi
         fi
     fi
     log_info "Already up to date."
