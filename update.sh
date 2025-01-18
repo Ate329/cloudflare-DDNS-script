@@ -601,16 +601,20 @@ if [ "$COMMITS_BEHIND" -eq 0 ]; then
     # Even if there are no git updates, we should check if the config needs updating
     if [ -f cloudflare-dns-update.conf ]; then
         log_info "Checking if configuration needs updating..."
-        # Create temporary copy of current config for comparison
-        cp cloudflare-dns-update.conf cloudflare-dns-update.conf.current
-        add_temp_file "cloudflare-dns-update.conf.current"
+        # Get the template config from the repository
+        if ! git show "origin/main:cloudflare-dns-update.conf" > "cloudflare-dns-update.conf.template"; then
+            log_error "Failed to get template configuration"
+            exit 1
+        fi
+        add_temp_file "cloudflare-dns-update.conf.template"
+
         # Try merging to see if there are differences
-        if merge_configs cloudflare-dns-update.conf.current cloudflare-dns-update.conf > /dev/null 2>&1; then
+        if merge_configs cloudflare-dns-update.conf cloudflare-dns-update.conf.template > /dev/null 2>&1; then
             log_info "Configuration is up to date."
         else
             log_warn "Configuration file needs updating despite no git changes."
             # Actual merge with the real file
-            merge_configs cloudflare-dns-update.conf cloudflare-dns-update.conf
+            merge_configs cloudflare-dns-update.conf cloudflare-dns-update.conf.template
         fi
     fi
     log_info "Already up to date."
