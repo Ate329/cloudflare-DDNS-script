@@ -288,9 +288,27 @@ merge_configs() {
     local merged_config="${user_config}.merged"
     local has_new_options=false
     local current_section=""
+    
+    # Define required sections in order
+    declare -a section_order=(
+        "Domain configurations"
+        "Global settings"
+        "Error handling settings"
+        "Log settings"
+        "Update script settings"
+        "Telegram notification settings"
+    )
+    
     declare -A sections_seen
     declare -A options_added
-    declare -A section_comments
+    declare -A user_values
+    declare -A user_comments
+    declare -A valid_sections
+
+    # Initialize valid sections
+    for section in "${section_order[@]}"; do
+        valid_sections["$section"]=1
+    done
 
     # Verify input files exist and are readable
     if [ ! -f "$user_config" ] || [ ! -r "$user_config" ]; then
@@ -302,121 +320,187 @@ merge_configs() {
         return 1
     fi
 
-    # First pass: read user's config and mark all sections, options, and their comments
-    local last_comments=""
-    while IFS= read -r line; do
-        # Track comments
-        if [[ "$line" =~ ^#[[:space:]].*$ ]]; then
-            [ -n "$last_comments" ] && last_comments+=$'\n'
-            last_comments+="$line"
-            continue
+    # Validate option name function
+    validate_option_name() {
+        local option=$1
+        if ! [[ "$option" =~ ^[A-Za-z_][A-Za-z0-9_]*$ ]]; then
+            log_error "Invalid option name format: $option"
+            return 1
         fi
-
-        # Track sections
-        if [[ "$line" =~ ^###[[:space:]]*(.*)[[:space:]]*$ ]]; then
-            current_section="${BASH_REMATCH[1]}"
-            sections_seen["$current_section"]=1
-            section_comments["$current_section"]="$last_comments"
-            last_comments=""
-            continue
-        fi
-
-        # Track existing options
-        if [[ "$line" =~ ^([A-Za-z_][A-Za-z0-9_]*)= ]]; then
-            options_added["${BASH_REMATCH[1]}"]=1
-            last_comments=""
-        fi
-    done < "$user_config"
-
-    # Create merged config starting with user's config
-    cp "$user_config" "$merged_config" || {
-        log_error "Failed to create merged config file."
-        return 1
+        return 0
     }
-    add_temp_file "$merged_config"
 
-    # Second pass: process new config and add new options in correct sections
-    current_section=""
-    local temp_section_content=""
-    local in_matching_section=false
-    last_comments=""
+    # First pass: read user's config to store all current values and mark sections
+    local last_comment=""
+    local line_continuation=false
+    local current_value=""
+    local current_key=""
 
-    while IFS= read -r line; do
-        # Track comments
-        if [[ "$line" =~ ^#[[:space:]].*$ ]]; then
-            [ -n "$last_comments" ] && last_comments+=$'\n'
-            last_comments+="$line"
+    while IFS= read -r line || [ -n "$line" ]; do
+        # Handle line continuation
+        if [ "$line_continuation" = true ]; then
+            current_value+=$'\n'"$line"
+            if [[ ! "$line" =~ \\$ ]]; then
+                user_values["$current_key"]="$current_value"
+                line_continuation=false
+                current_value=""
+                current_key=""
+            fi
+            continue
+        fi
+
+        # Handle comments
+        if [[ "$line" =~ ^[[:space:]]*#.*$ ]] || [[ -z "$line" && -n "$last_comment" ]]; then
+            if [ -n "$last_comment" ]; then
+                last_comment+=$'\n'
+            fi
+            last_comment+="$line"
+            continue
+        fi
+
+        # Handle empty lines
+        if [[ -z "$line" ]]; then
+            last_comment=""
             continue
         fi
 
         # Detect section headers
         if [[ "$line" =~ ^###[[:space:]]*(.*)[[:space:]]*$ ]]; then
-            # If we have pending content from previous section, append it
-            if [ -n "$temp_section_content" ] && [ "$in_matching_section" = true ]; then
-                echo "$temp_section_content" >> "$merged_config"
-            fi
-
             current_section="${BASH_REMATCH[1]}"
-            temp_section_content=""
-            in_matching_section=false
-
-            # If this is a new section, add it at the end
-            if [ -z "${sections_seen[$current_section]:-}" ]; then
-                has_new_options=true
-                log_warn "New section found: $current_section"
-                echo "" >> "$merged_config"  # Add newline for readability
-                [ -n "$last_comments" ] && echo "$last_comments" >> "$merged_config"
-                echo "### $current_section" >> "$merged_config"
-                sections_seen["$current_section"]=1
-                section_comments["$current_section"]="$last_comments"
-                in_matching_section=true
+            if [ -z "${valid_sections[$current_section]:-}" ]; then
+                log_warn "Unknown section found: $current_section"
             fi
-            last_comments=""
+            sections_seen["$current_section"]=1
+            [ -n "$last_comment" ] && user_comments["section_${current_section}"]="$last_comment"
+            last_comment=""
+            continue
+        fi
+
+        # Store existing options and their values
+        if [[ "$line" =~ ^([A-Za-z_][A-Za-z0-9_]*)=(.*)$ ]]; then
+            local key="${BASH_REMATCH[1]}"
+            local value="${BASH_REMATCH[2]}"
+
+            # Validate option name
+            if ! validate_option_name "$key"; then
+                continue
+            fi
+
+            # Handle multi-line values
+            if [[ "$value" =~ \\$ ]]; then
+                line_continuation=true
+                current_key="$key"
+                current_value="$value"
+                continue
+            fi
+
+            # Store single-line value
+            user_values["$key"]="$value"
+            options_added["$key"]=1
+            [ -n "$last_comment" ] && user_comments["option_${key}"]="$last_comment"
+            last_comment=""
+        fi
+    done < "$user_config"
+
+    # Verify required sections in new config
+    local found_sections=()
+    local current_order=0
+    local last_section_order=-1
+    while IFS= read -r line; do
+        if [[ "$line" =~ ^###[[:space:]]*(.*)[[:space:]]*$ ]]; then
+            local section="${BASH_REMATCH[1]}"
+            if [ -n "${valid_sections[$section]:-}" ]; then
+                found_sections+=("$section")
+                # Check section order
+                for ((i=0; i<${#section_order[@]}; i++)); do
+                    if [ "$section" = "${section_order[$i]}" ]; then
+                        current_order=$i
+                        break
+                    fi
+                done
+                if [ $current_order -lt $last_section_order ]; then
+                    log_error "Sections are not in the correct order in new config"
+                    return 1
+                fi
+                last_section_order=$current_order
+            fi
+        fi
+    done < "$new_config"
+
+    # Check for missing required sections
+    for section in "${section_order[@]}"; do
+        if [[ ! " ${found_sections[@]} " =~ " ${section} " ]] && [ "$section" != "Telegram notification settings" ]; then
+            log_error "Missing required section in new config: $section"
+            return 1
+        fi
+    done
+
+    # Second pass: create merged config
+    local temp_file
+    temp_file=$(mktemp)
+    add_temp_file "$temp_file"
+
+    while IFS= read -r line || [ -n "$line" ]; do
+        # Pass through comments and empty lines unchanged
+        if [[ "$line" =~ ^[[:space:]]*#.*$ ]] || [[ -z "$line" ]]; then
+            echo "$line" >> "$temp_file"
             continue
         fi
 
         # Process options
-        if [[ "$line" =~ ^([A-Za-z_][A-Za-z0-9_]*)= ]]; then
-            key="${BASH_REMATCH[1]}"
-
-            # If option doesn't exist in user's config
-            if [ -z "${options_added[$key]:-}" ]; then
+        if [[ "$line" =~ ^([A-Za-z_][A-Za-z0-9_]*)=(.*)$ ]]; then
+            local key="${BASH_REMATCH[1]}"
+            
+            # If user has this option configured, use their value and comment
+            if [ -n "${user_values[$key]:-}" ]; then
+                # Add user's comment if exists
+                if [ -n "${user_comments["option_${key}"]:-}" ]; then
+                    echo "${user_comments["option_${key}"]}" >> "$temp_file"
+                fi
+                # Preserve the exact value from user's config
+                echo "$key=${user_values[$key]}" >> "$temp_file"
+            else
                 has_new_options=true
                 log_warn "New option found: $key in section: $current_section"
-
-                # Add to temporary section content
-                if [ -n "$temp_section_content" ]; then
-                    temp_section_content+=$'\n'
-                fi
-                [ -n "$last_comments" ] && temp_section_content+=$'\n'"$last_comments"
-                temp_section_content+=$'\n'"# New option added by update"$'\n'"$line"
-                options_added["$key"]=1
-                in_matching_section=true
+                echo "$line" >> "$temp_file"
             fi
-            last_comments=""
+            continue
         fi
+
+        # Process section headers
+        if [[ "$line" =~ ^###[[:space:]]*(.*)[[:space:]]*$ ]]; then
+            current_section="${BASH_REMATCH[1]}"
+            # Add user's section comment if exists
+            if [ -n "${user_comments["section_${current_section}"]:-}" ]; then
+                # Add a newline before section if not at start of file
+                if [ -s "$temp_file" ]; then
+                    echo "" >> "$temp_file"
+                fi
+                echo "${user_comments["section_${current_section}"]}" >> "$temp_file"
+            fi
+            echo "$line" >> "$temp_file"
+            continue
+        fi
+
+        # Pass through any other lines unchanged
+        echo "$line" >> "$temp_file"
     done < "$new_config"
 
-    # Append any remaining section content
-    if [ -n "$temp_section_content" ] && [ "$in_matching_section" = true ]; then
-        echo "$temp_section_content" >> "$merged_config"
-    fi
-
+    # Move temp file to final location
     if [ "$has_new_options" = true ]; then
         log_info "New configuration options have been added to your config file"
-        cp -p "$merged_config" "${user_config}.new"  # Create a new file for review
+        cp -p "$temp_file" "${user_config}.new"  # Create a new file for review
         add_temp_file "${user_config}.new"
 
-        if ! mv "$merged_config" "$user_config"; then
+        if ! mv "$temp_file" "$user_config"; then
             log_error "Failed to apply merged configuration."
-            rm -f "$merged_config"
             return 1
         fi
         log_info "A copy of the new configuration has been saved as ${user_config}.new for review"
         return 0
     else
         log_info "No new configuration options found"
-        rm -f "$merged_config"
+        rm -f "$temp_file"
         return 0
     fi
 }
@@ -562,12 +646,6 @@ if [ -f "$BACKUP_DIR/cloudflare-dns-update.conf" ] && [ -f cloudflare-dns-update
     }
     add_temp_file "cloudflare-dns-update.conf.new"
 
-    # Add new option if it doesn't exist
-    if ! grep -q "^max_update_backups=" cloudflare-dns-update.conf; then
-        echo -e "\n### Update script settings" >> cloudflare-dns-update.conf
-        echo "max_update_backups=10  # Number of update backups to keep (default: 10)" >> cloudflare-dns-update.conf
-    fi
-
     # Restore user's config for merging
     cp "$BACKUP_DIR/cloudflare-dns-update.conf" ./cloudflare-dns-update.conf || {
         log_error "Failed to restore backup configuration for merging."
@@ -584,7 +662,7 @@ if [ -f "$BACKUP_DIR/cloudflare-dns-update.conf" ] && [ -f cloudflare-dns-update
         }
     fi
 
-    # Normal merge without stashed changes
+    # Merge configurations
     if ! merge_configs cloudflare-dns-update.conf cloudflare-dns-update.conf.new; then
         log_error "Failed to merge configuration files"
         restore_from_backup "$BACKUP_DIR"
