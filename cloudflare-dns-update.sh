@@ -20,7 +20,8 @@ Options:
     -6, --ipv6 yes/no        Enable/disable IPv6 support
     -p, --proxy true/false   Enable/disable Cloudflare proxy
     -l, --ttl NUMBER         Set TTL (1 or 120-7200)
-    --backup                 Backup current DNS records
+    --backup                 Backup current DNS records and update DNS records
+    --backup-only            Backup current DNS records without updating DNS records
     --restore FILE           Restore DNS records from backup file
     -h, --help              Show this help message
 EOF
@@ -28,7 +29,7 @@ EOF
 }
 
 ### Parse command line arguments
-TEMP=$(getopt -o 'hc:d:t:6:p:l:' --long 'help,config:,domains:,token:,ipv6:,proxy:,ttl:,backup,restore:' -n "$(basename "$0")" -- "$@")
+TEMP=$(getopt -o 'hc:d:t:6:p:l:' --long 'help,config:,domains:,token:,ipv6:,proxy:,ttl:,backup,backup-only,restore:' -n "$(basename "$0")" -- "$@")
 
 if [ $? -ne 0 ]; then
     echo 'Terminating...' >&2
@@ -47,6 +48,7 @@ ipv6_override=""
 proxy_override=""
 ttl_override=""
 do_backup=false
+backup_only=false
 restore_file=""
 
 while true; do
@@ -86,6 +88,12 @@ while true; do
             ;;
         '--backup')
             do_backup=true
+            shift
+            continue
+            ;;
+        '--backup-only')
+            do_backup=true
+            backup_only=true
             shift
             continue
             ;;
@@ -652,16 +660,7 @@ if [ "$do_backup" = true ] || [ -n "$restore_file" ]; then
     fi
 fi
 
-# Process backup/restore operations if requested
-if [ "$do_backup" = true ]; then
-    backup_dns_records
-    backup_status=$?
-    if [ $backup_status -eq 0 ]; then
-        log "==> Script finished"
-    fi
-    exit $backup_status
-fi
-
+# Process restore operation if requested
 if [ -n "$restore_file" ]; then
     restore_dns_records "$restore_file"
     restore_status=$?
@@ -669,6 +668,18 @@ if [ -n "$restore_file" ]; then
         log "==> Script finished"
     fi
     exit $restore_status
+fi
+
+# Exit early if backup-only mode
+if [ "$backup_only" = true ]; then
+    backup_dns_records
+    backup_status=$?
+    if [ $backup_status -ne 0 ]; then
+        log "Error! Backup failed"
+        exit $backup_status
+    fi
+    log "==> Script finished (backup only)"
+    exit 0
 fi
 
 # Process each zone and its domains
@@ -719,5 +730,15 @@ for zone_config in "${zone_configs[@]}"; do
         fi
     done
 done
+
+# Perform backup if requested (after DNS updates)
+if [ "$do_backup" = true ]; then
+    backup_dns_records
+    backup_status=$?
+    if [ $backup_status -ne 0 ]; then
+        log "Error! Backup failed"
+        exit $backup_status
+    fi
+fi
 
 log "==> Script finished"
