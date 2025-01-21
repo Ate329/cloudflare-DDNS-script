@@ -419,6 +419,7 @@ get_external_ip() {
     local ip_type=$1
     local sources=()
     local regex
+    local timeout=3  # Reduced timeout from 10 to 3 seconds
 
     case "$ip_type" in
         ipv4)
@@ -435,13 +436,22 @@ get_external_ip() {
             ;;
     esac
 
+    # Try all sources in parallel and use the first valid response
     for source in "${sources[@]}"; do
-        if ip=$(curl -"${ip_type:3:1}" -s "$source" --max-time 10) && [[ "$ip" =~ $regex ]]; then
-            echo "$ip"
-            return 0
-        fi
+        {
+            if ip=$(curl -"${ip_type:3:1}" -s "$source" --max-time "$timeout") && [[ "$ip" =~ $regex ]]; then
+                echo "$ip"
+                # Kill other running curl processes for this function
+                pkill -P $$ curl
+                exit 0
+            fi
+        } &
     done
 
+    # Wait for all background processes to finish
+    wait
+
+    # If we get here, no source returned a valid IP
     log "Error! Unable to retrieve $ip_type address from any source."
     return 1
 }
@@ -492,29 +502,35 @@ update_dns_record() {
     local record=$2
     local ip=$3
     local type=$4
+    local cache_key="${zoneid}_${type}"
 
-    # Get the DNS record information from Cloudflare API
-    local cloudflare_record_info
-    cloudflare_record_info=$(curl -s -X GET "https://api.cloudflare.com/client/v4/zones/$zoneid/dns_records?type=$type&name=$record" \
-        -H "Authorization: Bearer $cloudflare_zone_api_token" \
-        -H "Content-Type: application/json")
+    # Use cached records if available for this zone and type
+    if [ -z "${dns_records_cache[$cache_key]}" ]; then
+        # Get all DNS records of this type for the zone at once
+        local cloudflare_records_info
+        cloudflare_records_info=$(curl -s -X GET "https://api.cloudflare.com/client/v4/zones/$zoneid/dns_records?type=$type" \
+            -H "Authorization: Bearer $cloudflare_zone_api_token" \
+            -H "Content-Type: application/json")
 
-    log_to_file "Cloudflare API response for $record: $cloudflare_record_info" # Log the API response to file for debugging
+        if [[ $cloudflare_records_info == *"\"success\":false"* ]]; then
+            log "Error! Can't get $type records information from Cloudflare API for zone $zoneid"
+            return 1
+        }
 
-    if [[ $cloudflare_record_info == *"\"success\":false"* ]]; then
-        log "Error! Can't get $record ($type) record information from Cloudflare API"
-        return 1
+        dns_records_cache[$cache_key]="$cloudflare_records_info"
     fi
 
-    # Check if the record exists
-    local record_exists
-    record_exists=$(echo "$cloudflare_record_info" | grep -q '"result":\[\]' && echo "false" || echo "true")
+    local cloudflare_record_info
+    cloudflare_record_info=$(echo "${dns_records_cache[$cache_key]}" | jq -r ".result[] | select(.name==\"$record\")")
+    
+    log_to_file "Cloudflare API response for $record: $cloudflare_record_info" # Log the API response to file for debugging
 
-    if [ "$record_exists" == "false" ]; then
+    # Check if the record exists
+    if [ -z "$cloudflare_record_info" ]; then
         if [ "$auto_create_records" == "no" ]; then
             log "==> DNS $type record for $record does not exist. Skipping (auto_create_records is disabled)."
             return 0
-        fi
+        }
         
         log "==> DNS $type record for $record does not exist. Creating..."
         
@@ -530,6 +546,9 @@ update_dns_record() {
         log "==> Success!"
         log "==> Created new DNS $type Record for $record with IP: $ip, ttl: $ttl, proxied: $proxied"
 
+        # Update cache
+        dns_records_cache[$cache_key]=""  # Invalidate cache
+
         # Telegram notification
         if [ "${notify_telegram:-no}" == "yes" ]; then
             send_telegram_notification "$record" "$type" "$ip" "created"
@@ -537,11 +556,11 @@ update_dns_record() {
         return 0
     fi
 
-    # Get the current IP and proxy status from the API response
+    # Get the current IP and proxy status
     local current_ip
-    current_ip=$(echo "$cloudflare_record_info" | json_extract "content")
+    current_ip=$(echo "$cloudflare_record_info" | jq -r '.content')
     local current_proxied
-    current_proxied=$(echo "$cloudflare_record_info" | json_extract "proxied")
+    current_proxied=$(echo "$cloudflare_record_info" | jq -r '.proxied')
 
     # Check if IP or proxy have changed
     if [ "$current_ip" == "$ip" ] && [ "$current_proxied" == "$proxied" ]; then
@@ -551,9 +570,9 @@ update_dns_record() {
 
     log "==> DNS $type record of $record is: $current_ip. Trying to update..."
 
-    # Get the DNS record ID from response
+    # Get the DNS record ID
     local cloudflare_dns_record_id
-    cloudflare_dns_record_id=$(echo "$cloudflare_record_info" | json_extract "id")
+    cloudflare_dns_record_id=$(echo "$cloudflare_record_info" | jq -r '.id')
 
     # Push new DNS record information to Cloudflare API
     if ! curl -s -X PUT "https://api.cloudflare.com/client/v4/zones/$zoneid/dns_records/$cloudflare_dns_record_id" \
@@ -567,11 +586,17 @@ update_dns_record() {
     log "==> Success!"
     log "==> $record DNS $type Record updated to: $ip, ttl: $ttl, proxied: $proxied"
 
+    # Update cache
+    dns_records_cache[$cache_key]=""  # Invalidate cache
+
     # Telegram notification
     if [ "${notify_telegram:-no}" == "yes" ]; then
         send_telegram_notification "$record" "$type" "$ip" "updated"
     fi
 }
+
+# Initialize DNS records cache
+declare -A dns_records_cache
 
 # Handle backup/restore if requested
 if [ "$do_backup" = true ] || [ -n "$restore_file" ]; then
