@@ -436,7 +436,9 @@ get_external_ip() {
     local ip_type=$1
     local sources=()
     local regex
-    local timeout=3  # Reduced timeout from 10 to 3 seconds
+    local timeout=3
+    local temp_file
+    temp_file=$(mktemp)
 
     case "$ip_type" in
         ipv4)
@@ -449,6 +451,7 @@ get_external_ip() {
             ;;
         *)
             log "Error! Invalid IP type specified: $ip_type"
+            rm -f "$temp_file"
             return 1
             ;;
     esac
@@ -463,13 +466,12 @@ get_external_ip() {
             if ip=$(curl -"${ip_type:3:1}" -s "$source" --max-time "$timeout"); then
                 log "==> Got response from $source: $ip"
                 if [[ "$ip" =~ $regex ]]; then
-                    echo "$ip"
+                    echo "$ip" > "$temp_file"
                     log "==> Valid $ip_type found from $source: $ip"
-                    # Kill other running curl processes for this function
+                    # Kill other running curl processes
                     for pid in "${pids[@]}"; do
                         kill -9 "$pid" 2>/dev/null || true
                     done
-                    exit 0
                 else
                     log "==> Invalid $ip_type format from $source: $ip"
                 fi
@@ -485,7 +487,16 @@ get_external_ip() {
         wait "$pid" || true
     done
 
-    # If we get here, no source returned a valid IP
+    # Check if we got a valid IP
+    if [ -s "$temp_file" ]; then
+        local result
+        result=$(cat "$temp_file")
+        rm -f "$temp_file"
+        echo "$result"
+        return 0
+    fi
+
+    rm -f "$temp_file"
     log "Error! Unable to retrieve $ip_type address from any source."
     return 1
 }
@@ -550,7 +561,7 @@ update_dns_record() {
         if [[ $cloudflare_records_info == *"\"success\":false"* ]]; then
             log "Error! Can't get $type records information from Cloudflare API for zone $zoneid"
             return 1
-        }
+        fi
 
         dns_records_cache[$cache_key]="$cloudflare_records_info"
     fi
