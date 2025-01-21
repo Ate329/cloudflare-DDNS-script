@@ -576,7 +576,7 @@ update_dns_record() {
         if [ "$auto_create_records" == "no" ]; then
             log "==> DNS $type record for $record does not exist. Skipping (auto_create_records is disabled)."
             return 0
-        }
+        fi
         
         log "==> DNS $type record for $record does not exist. Creating..."
         
