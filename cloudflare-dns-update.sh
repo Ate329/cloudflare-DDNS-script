@@ -8,6 +8,9 @@ if ! command -v curl &> /dev/null; then
     exit 1
 fi
 
+# Enable associative array support
+declare -A dns_records_cache
+
 ### Function to show usage/help
 show_help() {
     cat << EOF
@@ -648,9 +651,6 @@ update_dns_record() {
         send_telegram_notification "$record" "$type" "$ip" "updated"
     fi
 }
-
-# Initialize DNS records cache
-declare -A dns_records_cache
 
 # Handle backup/restore if requested
 if [ "$do_backup" = true ] || [ -n "$restore_file" ]; then
