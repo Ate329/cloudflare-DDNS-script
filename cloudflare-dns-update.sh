@@ -118,31 +118,45 @@ log_to_file() {
 ### Function to cleanup old log entries
 cleanup_logs() {
     local days=$1
-    local temp_file
-    temp_file=$(mktemp)
+    log "==> Starting log cleanup process..."
     
     if [ "$days" -gt 0 ]; then
         # Calculate the cutoff date in seconds since epoch
         local cutoff_date
-        cutoff_date=$(date -d "$days days ago" +%s)
+        cutoff_date=$(date -d "$days days ago" +%Y-%m-%d)
+        log "==> Cutoff date for cleanup: $cutoff_date"
         
-        # Keep only recent entries
-        while IFS= read -r line; do
-            # Extract the date from the log line and convert to seconds since epoch
-            local line_date
-            line_date=$(date -d "$(echo "$line" | cut -d' ' -f1,2)" +%s)
-            
-            # Keep the line if it's newer than cutoff date
-            if [ "$line_date" -ge "$cutoff_date" ]; then
-                echo "$line" >> "$temp_file"
-            fi
-        done < "$LOG_FILE"
+        # Use awk for more efficient processing
+        local temp_file
+        temp_file=$(mktemp)
+        log "==> Created temporary file: $temp_file"
+        
+        # Count total lines before cleanup
+        local total_lines
+        total_lines=$(wc -l < "$LOG_FILE")
+        log "==> Total log lines before cleanup: $total_lines"
+        
+        # Process the file with awk - much faster than bash loop
+        awk -v cutoff="$cutoff_date" '
+            function parse_date(dt) {
+                # Extract YYYY-MM-DD from the timestamp
+                return substr(dt, 1, 10)
+            }
+            {
+                if (parse_date($1) >= cutoff) {
+                    print $0
+                }
+            }' "$LOG_FILE" > "$temp_file"
+        
+        # Count kept lines
+        local kept_lines
+        kept_lines=$(wc -l < "$temp_file")
         
         # Replace the old log file with the cleaned one
         mv "$temp_file" "$LOG_FILE"
-        log "==> Cleaned up log entries older than $days days"
+        log "==> Cleaned up log entries older than $days days (Kept $kept_lines/$total_lines lines)"
     else
-        rm "$temp_file"  # Clean up temp file if not used
+        log "==> Log cleanup skipped (days = 0)"
     fi
 }
 
@@ -392,10 +406,13 @@ if [[ "${notify_telegram:-no}" == "yes" ]]; then
 fi
 
 # Clean up old log entries if enabled
+log "==> Starting log cleanup with log_cleanup_days=$log_cleanup_days"
 cleanup_logs "$log_cleanup_days"
 
 # Check if IPv6 is enabled
+log "==> Checking IPv6 configuration"
 ipv6_enabled=$([ "$enable_ipv6" == "yes" ] && echo true || echo false)
+log "==> IPv6 enabled: $ipv6_enabled"
 
 ### Valid IPv4 and IPv6 Regex
 readonly IPV4_REGEX='^([0-9]{1,3}\.){3}[0-9]{1,3}$'
@@ -436,20 +453,37 @@ get_external_ip() {
             ;;
     esac
 
+    log "==> Attempting to get $ip_type address from ${#sources[@]} sources (timeout: ${timeout}s)"
+    
     # Try all sources in parallel and use the first valid response
+    local pids=()
     for source in "${sources[@]}"; do
         {
-            if ip=$(curl -"${ip_type:3:1}" -s "$source" --max-time "$timeout") && [[ "$ip" =~ $regex ]]; then
-                echo "$ip"
-                # Kill other running curl processes for this function
-                pkill -P $$ curl
-                exit 0
+            log "==> Trying source: $source"
+            if ip=$(curl -"${ip_type:3:1}" -s "$source" --max-time "$timeout"); then
+                log "==> Got response from $source: $ip"
+                if [[ "$ip" =~ $regex ]]; then
+                    echo "$ip"
+                    log "==> Valid $ip_type found from $source: $ip"
+                    # Kill other running curl processes for this function
+                    for pid in "${pids[@]}"; do
+                        kill -9 "$pid" 2>/dev/null || true
+                    done
+                    exit 0
+                else
+                    log "==> Invalid $ip_type format from $source: $ip"
+                fi
+            else
+                log "==> Failed to get response from $source"
             fi
         } &
+        pids+=($!)
     done
 
     # Wait for all background processes to finish
-    wait
+    for pid in "${pids[@]}"; do
+        wait "$pid" || true
+    done
 
     # If we get here, no source returned a valid IP
     log "Error! Unable to retrieve $ip_type address from any source."
@@ -457,6 +491,7 @@ get_external_ip() {
 }
 
 ### Get external IPs
+log "==> Starting IP address detection"
 ipv4=$(get_external_ip "ipv4") || ipv4=""
 [ "$ipv6_enabled" = true ] && ipv6=$(get_external_ip "ipv6") || ipv6=""
 
@@ -631,10 +666,14 @@ if [[ -z "$ipv4" ]] && [[ "$ipv6_enabled" != "yes" || -z "$ipv6" ]]; then
     exit 1
 fi
 
+log "==> Processing zone configurations"
 IFS=';' read -ra zone_configs <<< "$domain_configs"
+log "==> Found ${#zone_configs[@]} zone(s) to process"
+
 for zone_config in "${zone_configs[@]}"; do
     # Split zone ID and domains
     IFS=':' read -r zoneid domains <<< "$zone_config"
+    log "==> Processing zone: $zoneid"
     
     # Validate zone ID format (32 hex characters)
     if ! [[ "$zoneid" =~ ^[0-9a-f]{32}$ ]]; then
@@ -644,7 +683,10 @@ for zone_config in "${zone_configs[@]}"; do
     
     # Process each domain for this zone
     IFS=',' read -ra domain_list <<< "$domains"
+    log "==> Found ${#domain_list[@]} domain(s) in zone $zoneid"
+    
     for domain in "${domain_list[@]}"; do
+        log "==> Processing domain: $domain"
         # Validate domain name format
         if ! validate_domain "$domain"; then
             exit 1
@@ -656,8 +698,10 @@ for zone_config in "${zone_configs[@]}"; do
             if [ "$use_same_record_for_ipv6" == "yes" ]; then
                 [ -n "$ipv6" ] && update_dns_record "$zoneid" "$domain" "$ipv6" "AAAA"
             else
+                log "==> Processing IPv6-specific records for $domain"
                 IFS=',' read -ra dns_records_ipv6 <<< "$dns_record_ipv6"
                 for record in "${dns_records_ipv6[@]}"; do
+                    log "==> Processing IPv6 record: $record"
                     [ -n "$ipv6" ] && update_dns_record "$zoneid" "$record" "$ipv6" "AAAA"
                 done
             fi
