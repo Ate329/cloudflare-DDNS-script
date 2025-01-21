@@ -231,9 +231,46 @@ services.cron = {
 | `-6, --ipv6 yes/no` | Enable/disable IPv6 support |
 | `-p, --proxy true/false` | Enable/disable Cloudflare proxy |
 | `-l, --ttl NUMBER` | Set TTL (1 or 120-7200) |
-| `--backup` | Backup current DNS records |
+| `--backup` | Backup current DNS records and update DNS records |
+| `--backup-only` | Backup current DNS records without updating DNS records |
 | `--restore FILE` | Restore DNS records from backup file |
 | `-h, --help` | Show help message |
+
+### Backup and Restore
+
+The script provides two types of backup operations:
+
+1. **Backup with DNS Update (`--backup`)**:
+   ```bash
+   ./cloudflare-dns-update.sh --backup
+   ```
+   This will:
+   - Update your DNS records first
+   - Create a backup of your DNS records after the update
+   - Store the backup in the `dns_backups` directory
+
+2. **Backup Only (`--backup-only`)**:
+   ```bash
+   ./cloudflare-dns-update.sh --backup-only
+   ```
+   This will:
+   - Only create a backup of your current DNS records
+   - Skip any DNS record updates
+   - Store the backup in the `dns_backups` directory
+
+3. **Restore from Backup**:
+   ```bash
+   # Restore using relative path (will look in dns_backups directory)
+   ./cloudflare-dns-update.sh --restore dns_backup_20240101_120000.json
+
+   # Or using absolute/custom path
+   ./cloudflare-dns-update.sh --restore /path/to/backup/dns_backup_20240101_120000.json
+   ```
+
+Backups are automatically managed:
+- Old backups are cleaned up based on the `max_dns_backups` setting
+- Each backup includes a timestamp for easy identification
+- Backups are stored in JSON format for easy inspection and portability
 
 ## Configuration
 
