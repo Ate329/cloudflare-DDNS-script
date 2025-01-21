@@ -8,8 +8,8 @@ if ! command -v curl &> /dev/null; then
     exit 1
 fi
 
-# Enable associative array support
-declare -A dns_records_cache
+# Enable associative array support and make it global
+declare -g -A dns_records_cache=()
 
 ### Function to show usage/help
 show_help() {
@@ -561,6 +561,9 @@ update_dns_record() {
     local type=$4
     local cache_key="${zoneid}_${type}"
 
+    # Initialize cache key if not set
+    dns_records_cache[$cache_key]=${dns_records_cache[$cache_key]:-""}
+
     # Use cached records if available for this zone and type
     if [ -z "${dns_records_cache[$cache_key]}" ]; then
         # Get all DNS records of this type for the zone at once
@@ -575,6 +578,7 @@ update_dns_record() {
         fi
 
         dns_records_cache[$cache_key]="$cloudflare_records_info"
+        log_to_file "==> Cached DNS records for zone $zoneid type $type"
     fi
 
     local cloudflare_record_info
