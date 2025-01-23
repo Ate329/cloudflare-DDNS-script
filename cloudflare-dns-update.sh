@@ -10,6 +10,8 @@ fi
 
 # Enable associative array support and make it global
 declare -g -A dns_records_cache=()
+declare -g -A dns_records_cache_time=()
+readonly DNS_CACHE_TTL=300  # 5 minutes cache TTL
 
 ### Function to show usage/help
 show_help() {
@@ -132,39 +134,35 @@ cleanup_logs() {
     log "==> Starting log cleanup process..."
     
     if [ "$days" -gt 0 ]; then
-        # Calculate the cutoff date in seconds since epoch
+        # Calculate the cutoff date
         local cutoff_date
         cutoff_date=$(date -d "$days days ago" +%Y-%m-%d)
         log "==> Cutoff date for cleanup: $cutoff_date"
         
-        # Use awk for more efficient processing
-        local temp_file
-        temp_file=$(mktemp)
-        log "==> Created temporary file: $temp_file"
+        # Check file size first
+        local max_size=$((100*1024*1024))  # 100MB in bytes
+        local file_size
+        file_size=$(stat -f%z "$LOG_FILE" 2>/dev/null || stat -c%s "$LOG_FILE")
         
-        # Count total lines before cleanup
+        if [ "$file_size" -gt "$max_size" ]; then
+            log "Warning! Log file exceeds 100MB. Truncating to last 10000 lines."
+            tail -n 10000 "$LOG_FILE" > "$LOG_FILE.tmp" && mv "$LOG_FILE.tmp" "$LOG_FILE"
+        fi
+        
+        # Get line count before cleanup
         local total_lines
         total_lines=$(wc -l < "$LOG_FILE")
-        log "==> Total log lines before cleanup: $total_lines"
         
-        # Process the file with awk - much faster than bash loop
-        awk -v cutoff="$cutoff_date" '
-            function parse_date(dt) {
-                # Extract YYYY-MM-DD from the timestamp
-                return substr(dt, 1, 10)
-            }
-            {
-                if (parse_date($1) >= cutoff) {
-                    print $0
-                }
-            }' "$LOG_FILE" > "$temp_file"
+        # Use sed for in-place editing with efficient date comparison
+        sed -i.tmp -E "/^([0-9]{4}-[0-9]{2}-[0-9]{2})[^]]*$/!b;/^($cutoff_date|$cutoff_date)/b;d" "$LOG_FILE"
         
-        # Count kept lines
+        # Get line count after cleanup
         local kept_lines
-        kept_lines=$(wc -l < "$temp_file")
+        kept_lines=$(wc -l < "$LOG_FILE")
         
-        # Replace the old log file with the cleaned one
-        mv "$temp_file" "$LOG_FILE"
+        # Remove temporary file
+        rm -f "$LOG_FILE.tmp"
+        
         log "==> Cleaned up log entries older than $days days (Kept $kept_lines/$total_lines lines)"
     else
         log "==> Log cleanup skipped (days = 0)"
@@ -187,16 +185,22 @@ cleanup_dns_backups() {
     
     # Only proceed if we have more backups than the limit
     local backup_count
-    backup_count=$(find "$backup_dir" -maxdepth 1 -name "$backup_pattern" | wc -l)
+    backup_count=$(find "$backup_dir" -maxdepth 1 -type f -name "$backup_pattern" | wc -l)
     
     if [ "$backup_count" -gt "$max_backups" ]; then
         log "==> Cleaning up old DNS backups (keeping last $max_backups)..."
-        find "$backup_dir" -maxdepth 1 -name "$backup_pattern" -printf "%T@ %p\n" | \
-            sort -n | head -n -"$max_backups" | cut -d' ' -f2- | \
-            while read -r backup; do
-                rm -f "$backup"
-                log_to_file "==> Removed old DNS backup: $backup"
-            done
+        
+        # Use a more efficient single-command approach
+        find "$backup_dir" -maxdepth 1 -type f -name "$backup_pattern" -printf '%T@ %p\n' | \
+            sort -n | \
+            head -n -"$max_backups" | \
+            cut -d' ' -f2- | \
+            xargs -r rm -f
+            
+        # Log the cleanup results
+        local new_count
+        new_count=$(find "$backup_dir" -maxdepth 1 -type f -name "$backup_pattern" | wc -l)
+        log "==> Removed $((backup_count - new_count)) old DNS backups"
     fi
 }
 
@@ -331,6 +335,30 @@ restore_dns_records() {
     fi
 }
 
+### Function to get cached DNS records
+get_cached_dns_records() {
+    local cache_key=$1
+    local current_time
+    current_time=$(date +%s)
+    
+    # Check if we have a valid cache entry
+    if [ -n "${dns_records_cache[$cache_key]:-}" ] && \
+       [ -n "${dns_records_cache_time[$cache_key]:-}" ] && \
+       [ $((current_time - dns_records_cache_time[$cache_key])) -lt $DNS_CACHE_TTL ]; then
+        echo "${dns_records_cache[$cache_key]}"
+        return 0
+    fi
+    return 1
+}
+
+### Function to set cached DNS records
+set_cached_dns_records() {
+    local cache_key=$1
+    local records=$2
+    dns_records_cache[$cache_key]="$records"
+    dns_records_cache_time[$cache_key]=$(date +%s)
+}
+
 ### Create log file
 parent_path="$(dirname "${BASH_SOURCE[0]}")"
 LOG_FILE="${parent_path}/cloudflare-dns-update.log"
@@ -448,8 +476,23 @@ get_external_ip() {
     local sources=()
     local regex
     local timeout=3
+    local max_concurrent=2  # Limit concurrent requests
     local temp_file
     temp_file=$(mktemp)
+    local pids=()
+    local result=""
+
+    # Cleanup function for this operation
+    cleanup_ip_check() {
+        for pid in "${pids[@]}"; do
+            # Try SIGTERM first
+            if kill -0 "$pid" 2>/dev/null; then
+                kill "$pid" 2>/dev/null || kill -9 "$pid" 2>/dev/null || true
+            fi
+        done
+        [ -f "$temp_file" ] && rm -f "$temp_file"
+    }
+    trap cleanup_ip_check EXIT
 
     case "$ip_type" in
         ipv4)
@@ -462,52 +505,65 @@ get_external_ip() {
             ;;
         *)
             log "Error! Invalid IP type specified: $ip_type"
-            rm -f "$temp_file"
+            cleanup_ip_check
             return 1
             ;;
     esac
 
     log "==> Attempting to get $ip_type address from ${#sources[@]} sources (timeout: ${timeout}s)"
     
-    # Try all sources in parallel and use the first valid response
-    local pids=()
-    for source in "${sources[@]}"; do
-        {
-            log "==> Trying source: $source"
-            if ip=$(curl -"${ip_type:3:1}" -s "$source" --max-time "$timeout"); then
-                log "==> Got response from $source: $ip"
-                if [[ "$ip" =~ $regex ]]; then
-                    echo "$ip" > "$temp_file"
-                    log "==> Valid $ip_type found from $source: $ip"
-                    # Kill other running curl processes
-                    for pid in "${pids[@]}"; do
-                        kill -9 "$pid" 2>/dev/null || true
-                    done
+    # Process sources in batches to limit concurrent processes
+    local batch_start=0
+    while [ $batch_start -lt ${#sources[@]} ] && [ -z "$result" ]; do
+        pids=()  # Reset PIDs for new batch
+        
+        # Start a batch of requests with timeout
+        for ((i=batch_start; i<batch_start+max_concurrent && i<${#sources[@]}; i++)); do
+            local source="${sources[$i]}"
+            {
+                log "==> Trying source: $source"
+                if timeout "$timeout" curl -"${ip_type:3:1}" -s "$source" --connect-timeout 2 > "$temp_file.$i"; then
+                    ip=$(cat "$temp_file.$i")
+                    rm -f "$temp_file.$i"
+                    log "==> Got response from $source: $ip"
+                    if [[ "$ip" =~ $regex ]]; then
+                        echo "$ip" > "$temp_file"
+                        log "==> Valid $ip_type found from $source: $ip"
+                        # Signal other processes to stop
+                        cleanup_ip_check
+                    else
+                        log "==> Invalid $ip_type format from $source: $ip"
+                    fi
                 else
-                    log "==> Invalid $ip_type format from $source: $ip"
+                    rm -f "$temp_file.$i"
+                    log "==> Failed to get response from $source"
                 fi
-            else
-                log "==> Failed to get response from $source"
-            fi
-        } &
-        pids+=($!)
+            } &
+            pids+=($!)
+        done
+
+        # Wait for current batch to complete with timeout
+        for pid in "${pids[@]}"; do
+            wait "$pid" 2>/dev/null || true
+        done
+
+        # Check if we got a valid result
+        if [ -s "$temp_file" ]; then
+            result=$(cat "$temp_file")
+            break
+        fi
+
+        batch_start=$((batch_start + max_concurrent))
+        sleep 1  # Brief pause between batches
     done
 
-    # Wait for all background processes to finish
-    for pid in "${pids[@]}"; do
-        wait "$pid" || true
-    done
-
-    # Check if we got a valid IP
-    if [ -s "$temp_file" ]; then
-        local result
-        result=$(cat "$temp_file")
-        rm -f "$temp_file"
+    # Cleanup and return result
+    cleanup_ip_check
+    if [ -n "$result" ]; then
         echo "$result"
         return 0
     fi
 
-    rm -f "$temp_file"
     log "Error! Unable to retrieve $ip_type address from any source."
     return 1
 }
@@ -560,14 +616,14 @@ update_dns_record() {
     local ip=$3
     local type=$4
     local cache_key="${zoneid}_${type}"
-
-    # Initialize cache key if not set
-    dns_records_cache[$cache_key]=${dns_records_cache[$cache_key]:-""}
-
-    # Use cached records if available for this zone and type
-    if [ -z "${dns_records_cache[$cache_key]}" ]; then
-        # Get all DNS records of this type for the zone at once
-        local cloudflare_records_info
+    local cloudflare_records_info
+    
+    # Try to get records from cache first
+    cloudflare_records_info=$(get_cached_dns_records "$cache_key")
+    
+    # If not in cache or expired, fetch from API
+    if [ $? -ne 0 ]; then
+        log_to_file "==> Cache miss for zone $zoneid type $type, fetching from API"
         cloudflare_records_info=$(curl -s -X GET "https://api.cloudflare.com/client/v4/zones/$zoneid/dns_records?type=$type" \
             -H "Authorization: Bearer $cloudflare_zone_api_token" \
             -H "Content-Type: application/json")
@@ -577,12 +633,15 @@ update_dns_record() {
             return 1
         fi
 
-        dns_records_cache[$cache_key]="$cloudflare_records_info"
+        # Cache the results
+        set_cached_dns_records "$cache_key" "$cloudflare_records_info"
         log_to_file "==> Cached DNS records for zone $zoneid type $type"
+    else
+        log_to_file "==> Using cached DNS records for zone $zoneid type $type"
     fi
 
     local cloudflare_record_info
-    cloudflare_record_info=$(echo "${dns_records_cache[$cache_key]}" | jq -r ".result[] | select(.name==\"$record\")")
+    cloudflare_record_info=$(echo "$cloudflare_records_info" | jq -r ".result[] | select(.name==\"$record\")")
     
     log_to_file "Cloudflare API response for $record: $cloudflare_record_info" # Log the API response to file for debugging
 
@@ -607,8 +666,9 @@ update_dns_record() {
         log "==> Success!"
         log "==> Created new DNS $type Record for $record with IP: $ip, ttl: $ttl, proxied: $proxied"
 
-        # Update cache
-        dns_records_cache[$cache_key]=""  # Invalidate cache
+        # Invalidate cache after creating new record
+        dns_records_cache[$cache_key]=""
+        dns_records_cache_time[$cache_key]=""
 
         # Telegram notification
         if [ "${notify_telegram:-no}" == "yes" ]; then
@@ -647,8 +707,9 @@ update_dns_record() {
     log "==> Success!"
     log "==> $record DNS $type Record updated to: $ip, ttl: $ttl, proxied: $proxied"
 
-    # Update cache
-    dns_records_cache[$cache_key]=""  # Invalidate cache
+    # Invalidate cache after update
+    dns_records_cache[$cache_key]=""
+    dns_records_cache_time[$cache_key]=""
 
     # Telegram notification
     if [ "${notify_telegram:-no}" == "yes" ]; then
