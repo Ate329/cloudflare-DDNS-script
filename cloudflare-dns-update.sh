@@ -504,7 +504,7 @@ get_external_ip() {
     if [ ${#sources[@]} -eq 0 ]; then
         log "Error! No sources defined for $ip_type"
         return 1
-    }
+    fi
 
     log "==> Attempting to get $ip_type address from ${#sources[@]} sources (timeout: ${timeout}s)"
     
