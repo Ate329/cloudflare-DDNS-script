@@ -8,6 +8,11 @@ if ! command -v curl &> /dev/null; then
     exit 1
 fi
 
+if ! command -v jq &> /dev/null; then
+    echo "Error! jq command not found. Please install jq first."
+    exit 1
+fi
+
 # Enable associative array support and make it global
 declare -g -A dns_records_cache=()
 declare -g -A dns_records_cache_time=()
@@ -609,6 +614,7 @@ update_dns_record() {
     local type=$4
     local cache_key="${zoneid}_${type}"
     local cloudflare_records_info
+    local api_response
     
     # Try to get records from cache first
     cloudflare_records_info=$(get_cached_dns_records "$cache_key")
@@ -616,12 +622,28 @@ update_dns_record() {
     # If not in cache or expired, fetch from API
     if [ $? -ne 0 ]; then
         log_to_file "==> Cache miss for zone $zoneid type $type, fetching from API"
-        cloudflare_records_info=$(curl -s -X GET "https://api.cloudflare.com/client/v4/zones/$zoneid/dns_records?type=$type" \
+        api_response=$(curl -s -X GET "https://api.cloudflare.com/client/v4/zones/$zoneid/dns_records?type=$type" \
             -H "Authorization: Bearer $cloudflare_zone_api_token" \
             -H "Content-Type: application/json")
 
+        if [ -z "$api_response" ]; then
+            log "Error! Empty response from Cloudflare API for zone $zoneid"
+            return 1
+        fi
+
+        # Check if the response is valid JSON
+        if ! echo "$api_response" | jq empty 2>/dev/null; then
+            log "Error! Invalid JSON response from Cloudflare API for zone $zoneid"
+            log_to_file "Invalid response: $api_response"
+            return 1
+        }
+
+        cloudflare_records_info="$api_response"
+
         if [[ $cloudflare_records_info == *"\"success\":false"* ]]; then
-            log "Error! Can't get $type records information from Cloudflare API for zone $zoneid"
+            local error_message
+            error_message=$(echo "$cloudflare_records_info" | jq -r '.errors[0].message' 2>/dev/null || echo "Unknown error")
+            log "Error! Can't get $type records information from Cloudflare API for zone $zoneid: $error_message"
             return 1
         fi
 
@@ -633,7 +655,7 @@ update_dns_record() {
     fi
 
     local cloudflare_record_info
-    cloudflare_record_info=$(echo "$cloudflare_records_info" | jq -r ".result[] | select(.name==\"$record\")")
+    cloudflare_record_info=$(echo "$cloudflare_records_info" | jq -r ".result[] | select(.name==\"$record\")" 2>/dev/null)
     
     log_to_file "Cloudflare API response for $record: $cloudflare_record_info" # Log the API response to file for debugging
 
@@ -647,11 +669,20 @@ update_dns_record() {
         log "==> DNS $type record for $record does not exist. Creating..."
         
         # Create new DNS record
-        if ! curl -s -X POST "https://api.cloudflare.com/client/v4/zones/$zoneid/dns_records" \
+        api_response=$(curl -s -X POST "https://api.cloudflare.com/client/v4/zones/$zoneid/dns_records" \
             -H "Authorization: Bearer $cloudflare_zone_api_token" \
             -H "Content-Type: application/json" \
-            --data "{\"type\":\"$type\",\"name\":\"$record\",\"content\":\"$ip\",\"ttl\":$ttl,\"proxied\":$proxied}" | grep -q '"success":true'; then
-            log "Error! Failed to create DNS record for $record ($type)"
+            --data "{\"type\":\"$type\",\"name\":\"$record\",\"content\":\"$ip\",\"ttl\":$ttl,\"proxied\":$proxied}")
+
+        if [ -z "$api_response" ]; then
+            log "Error! Empty response when creating DNS record for $record ($type)"
+            return 1
+        fi
+
+        if ! echo "$api_response" | jq -e '.success' >/dev/null 2>&1; then
+            local error_message
+            error_message=$(echo "$api_response" | jq -r '.errors[0].message' 2>/dev/null || echo "Unknown error")
+            log "Error! Failed to create DNS record for $record ($type): $error_message"
             return 1
         fi
 
@@ -671,9 +702,15 @@ update_dns_record() {
 
     # Get the current IP and proxy status
     local current_ip
-    current_ip=$(echo "$cloudflare_record_info" | jq -r '.content')
+    current_ip=$(echo "$cloudflare_record_info" | jq -r '.content' 2>/dev/null)
     local current_proxied
-    current_proxied=$(echo "$cloudflare_record_info" | jq -r '.proxied')
+    current_proxied=$(echo "$cloudflare_record_info" | jq -r '.proxied' 2>/dev/null)
+
+    # Check if we got valid values
+    if [ -z "$current_ip" ] || [ -z "$current_proxied" ]; then
+        log "Error! Failed to extract current record information for $record"
+        return 1
+    fi
 
     # Check if IP or proxy have changed
     if [ "$current_ip" == "$ip" ] && [ "$current_proxied" == "$proxied" ]; then
@@ -685,14 +722,28 @@ update_dns_record() {
 
     # Get the DNS record ID
     local cloudflare_dns_record_id
-    cloudflare_dns_record_id=$(echo "$cloudflare_record_info" | jq -r '.id')
+    cloudflare_dns_record_id=$(echo "$cloudflare_record_info" | jq -r '.id' 2>/dev/null)
+
+    if [ -z "$cloudflare_dns_record_id" ]; then
+        log "Error! Failed to get record ID for $record"
+        return 1
+    fi
 
     # Push new DNS record information to Cloudflare API
-    if ! curl -s -X PUT "https://api.cloudflare.com/client/v4/zones/$zoneid/dns_records/$cloudflare_dns_record_id" \
+    api_response=$(curl -s -X PUT "https://api.cloudflare.com/client/v4/zones/$zoneid/dns_records/$cloudflare_dns_record_id" \
         -H "Authorization: Bearer $cloudflare_zone_api_token" \
         -H "Content-Type: application/json" \
-        --data "{\"type\":\"$type\",\"name\":\"$record\",\"content\":\"$ip\",\"ttl\":$ttl,\"proxied\":$proxied}" | grep -q '"success":true'; then
-        log "Error! Update failed for $record ($type)"
+        --data "{\"type\":\"$type\",\"name\":\"$record\",\"content\":\"$ip\",\"ttl\":$ttl,\"proxied\":$proxied}")
+
+    if [ -z "$api_response" ]; then
+        log "Error! Empty response when updating DNS record for $record ($type)"
+        return 1
+    fi
+
+    if ! echo "$api_response" | jq -e '.success' >/dev/null 2>&1; then
+        local error_message
+        error_message=$(echo "$api_response" | jq -r '.errors[0].message' 2>/dev/null || echo "Unknown error")
+        log "Error! Update failed for $record ($type): $error_message"
         return 1
     fi
 
