@@ -636,7 +636,7 @@ update_dns_record() {
             log "Error! Invalid JSON response from Cloudflare API for zone $zoneid"
             log_to_file "Invalid response: $api_response"
             return 1
-        }
+        fi
 
         cloudflare_records_info="$api_response"
 
