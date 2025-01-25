@@ -476,23 +476,14 @@ get_external_ip() {
     local sources=()
     local regex
     local timeout=3
-    local max_concurrent=2  # Limit concurrent requests
-    local temp_file
-    temp_file=$(mktemp)
-    local pids=()
-    local result=""
+    local ip=""
+    local response=""
 
-    # Cleanup function for this operation
-    cleanup_ip_check() {
-        for pid in "${pids[@]}"; do
-            # Try SIGTERM first
-            if kill -0 "$pid" 2>/dev/null; then
-                kill "$pid" 2>/dev/null || kill -9 "$pid" 2>/dev/null || true
-            fi
-        done
-        [ -f "$temp_file" ] && rm -f "$temp_file"
-    }
-    trap cleanup_ip_check EXIT
+    # Input validation
+    if [ -z "$ip_type" ]; then
+        log "Error! IP type not specified"
+        return 1
+    fi
 
     case "$ip_type" in
         ipv4)
@@ -505,62 +496,42 @@ get_external_ip() {
             ;;
         *)
             log "Error! Invalid IP type specified: $ip_type"
-            cleanup_ip_check
             return 1
             ;;
     esac
 
+    # Validate that we have sources to try
+    if [ ${#sources[@]} -eq 0 ]; then
+        log "Error! No sources defined for $ip_type"
+        return 1
+    }
+
     log "==> Attempting to get $ip_type address from ${#sources[@]} sources (timeout: ${timeout}s)"
     
-    # Process sources in batches to limit concurrent processes
-    local batch_start=0
-    while [ $batch_start -lt ${#sources[@]} ] && [ -z "$result" ]; do
-        pids=()  # Reset PIDs for new batch
+    for source in "${sources[@]}"; do
+        [ -z "$source" ] && continue  # Skip empty sources
         
-        # Start a batch of requests with timeout
-        for ((i=batch_start; i<batch_start+max_concurrent && i<${#sources[@]}; i++)); do
-            local source="${sources[$i]}"
-            {
-                log "==> Trying source: $source"
-                if timeout "$timeout" curl -"${ip_type:3:1}" -s "$source" --connect-timeout 2 > "$temp_file.$i"; then
-                    ip=$(cat "$temp_file.$i")
-                    rm -f "$temp_file.$i"
-                    log "==> Got response from $source: $ip"
-                    if [[ "$ip" =~ $regex ]]; then
-                        echo "$ip" > "$temp_file"
-                        log "==> Valid $ip_type found from $source: $ip"
-                        # Signal other processes to stop
-                        cleanup_ip_check
-                    else
-                        log "==> Invalid $ip_type format from $source: $ip"
-                    fi
-                else
-                    rm -f "$temp_file.$i"
-                    log "==> Failed to get response from $source"
-                fi
-            } &
-            pids+=($!)
-        done
-
-        # Wait for current batch to complete with timeout
-        for pid in "${pids[@]}"; do
-            wait "$pid" 2>/dev/null || true
-        done
-
-        # Check if we got a valid result
-        if [ -s "$temp_file" ]; then
-            result=$(cat "$temp_file")
-            break
+        log "==> Trying source: $source"
+        # Use -4/-6 flag only for specific IP version
+        if response=$(timeout "$timeout" curl -"${ip_type:3:1}" -s --max-time "$timeout" --connect-timeout 2 "$source" 2>/dev/null) && [ -n "$response" ]; then
+            # Trim whitespace from response
+            response=$(echo "$response" | tr -d '[:space:]')
+            
+            log "==> Got response from $source: $response"
+            if [ -n "$response" ] && [[ "$response" =~ $regex ]]; then
+                ip="$response"
+                log "==> Valid $ip_type found from $source: $ip"
+                break
+            else
+                log "==> Invalid $ip_type format from $source: $response"
+            fi
+        else
+            log "==> Failed to get response from $source"
         fi
-
-        batch_start=$((batch_start + max_concurrent))
-        sleep 1  # Brief pause between batches
     done
 
-    # Cleanup and return result
-    cleanup_ip_check
-    if [ -n "$result" ]; then
-        echo "$result"
+    if [ -n "$ip" ]; then
+        echo "$ip"
         return 0
     fi
 
@@ -570,11 +541,32 @@ get_external_ip() {
 
 ### Get external IPs
 log "==> Starting IP address detection"
-ipv4=$(get_external_ip "ipv4") || ipv4=""
-[ "$ipv6_enabled" = true ] && ipv6=$(get_external_ip "ipv6") || ipv6=""
+ipv4=""
+ipv6=""
 
-[ -n "$ipv4" ] && log "==> External IPv4 is: $ipv4"
-[ "$ipv6_enabled" = true ] && [ -n "$ipv6" ] && log "==> External IPv6 is: $ipv6"
+# Get IPv4 address
+if ! ipv4=$(get_external_ip "ipv4"); then
+    log "Warning! Failed to get IPv4 address"
+else
+    if [ -n "$ipv4" ]; then
+        log "==> External IPv4 is: $ipv4"
+    else
+        log "Warning! Empty IPv4 address received"
+    fi
+fi
+
+# Get IPv6 address if enabled
+if [ "$ipv6_enabled" = true ]; then
+    if ! ipv6=$(get_external_ip "ipv6"); then
+        log "Warning! Failed to get IPv6 address"
+    else
+        if [ -n "$ipv6" ]; then
+            log "==> External IPv6 is: $ipv6"
+        else
+            log "Warning! Empty IPv6 address received"
+        fi
+    fi
+fi
 
 ### Function to extract value from JSON
 json_extract() {
