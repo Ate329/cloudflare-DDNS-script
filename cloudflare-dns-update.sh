@@ -819,20 +819,33 @@ for zone_config in "${zone_configs[@]}"; do
         log "==> Processing domain: $domain"
         # Validate domain name format
         if ! validate_domain "$domain"; then
-            exit 1
+            log "Error! Skipping invalid domain: $domain"
+            continue
         fi
         
-        [ -n "$ipv4" ] && update_dns_record "$zoneid" "$domain" "$ipv4" "A"
+        if [ -n "$ipv4" ]; then
+            if ! update_dns_record "$zoneid" "$domain" "$ipv4" "A"; then
+                log "Warning! Failed to update A record for $domain"
+            fi
+        fi
         
         if [ "$ipv6_enabled" = true ]; then
             if [ "$use_same_record_for_ipv6" == "yes" ]; then
-                [ -n "$ipv6" ] && update_dns_record "$zoneid" "$domain" "$ipv6" "AAAA"
+                if [ -n "$ipv6" ]; then
+                    if ! update_dns_record "$zoneid" "$domain" "$ipv6" "AAAA"; then
+                        log "Warning! Failed to update AAAA record for $domain"
+                    fi
+                fi
             else
                 log "==> Processing IPv6-specific records for $domain"
                 IFS=',' read -ra dns_records_ipv6 <<< "$dns_record_ipv6"
                 for record in "${dns_records_ipv6[@]}"; do
                     log "==> Processing IPv6 record: $record"
-                    [ -n "$ipv6" ] && update_dns_record "$zoneid" "$record" "$ipv6" "AAAA"
+                    if [ -n "$ipv6" ]; then
+                        if ! update_dns_record "$zoneid" "$record" "$ipv6" "AAAA"; then
+                            log "Warning! Failed to update AAAA record for $record"
+                        fi
+                    fi
                 done
             fi
         fi
