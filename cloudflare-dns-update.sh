@@ -159,7 +159,14 @@ cleanup_logs() {
         total_lines=$(wc -l < "$LOG_FILE")
         
         # Use sed for in-place editing with efficient date comparison
-        sed -i.tmp -E "/^([0-9]{4}-[0-9]{2}-[0-9]{2})[^]]*$/!b;/^($cutoff_date|$cutoff_date)/b;d" "$LOG_FILE"
+        cutoff_date_epoch=$(date -d "$days days ago" +%s)
+        sed -i.tmp -E "/^([0-9]{4}-[0-9]{2}-[0-9]{2})/ {
+            s//\1/
+            h
+            s/-//g
+            /^$cutoff_date$/! { x; d; }
+            x
+        }" "$LOG_FILE"
         
         # Get line count after cleanup
         local kept_lines
@@ -214,7 +221,8 @@ backup_dns_records() {
     local backup_dir="${parent_path}/dns_backups"
     local backup_file="${backup_dir}/dns_backup_$(date +%Y%m%d_%H%M%S).json"
     local temp_file
-    temp_file=$(mktemp)
+    temp_file=$(mktemp) || { log "Error creating temp file"; return 1; }
+    trap 'rm -f "$temp_file"' EXIT
     local success=true
 
     # Create backup directory if it doesn't exist
@@ -243,10 +251,16 @@ backup_dns_records() {
         
         # Get all DNS records for the zone
         local zone_records
-        if ! zone_records=$(curl -s -X GET "https://api.cloudflare.com/client/v4/zones/$zoneid/dns_records" \
+        if ! curl -s -X GET "https://api.cloudflare.com/client/v4/zones/$zoneid/dns_records" \
             -H "Authorization: Bearer $cloudflare_zone_api_token" \
-            -H "Content-Type: application/json"); then
+            -H "Content-Type: application/json" > "$temp_file"; then
             log "Error! Failed to get DNS records for zone $zoneid"
+            success=false
+            continue
+        fi
+
+        if ! jq -e '.success' < "$temp_file" >/dev/null; then
+            log "Error! Invalid response from Cloudflare API for zone $zoneid"
             success=false
             continue
         fi
@@ -299,7 +313,7 @@ restore_dns_records() {
         
         # Get records for this zone
         local records
-        records=$(jq -r ".zones[\"$zoneid\"].result[]" "$backup_file")
+        records=$(jq -c ".zones[\"$zoneid\"].result[]" "$backup_file")
 
         # Process each record
         while IFS= read -r record; do
@@ -312,12 +326,12 @@ restore_dns_records() {
             local record_proxied
             local record_ttl
 
-            record_id=$(echo "$record" | jq -r '.id')
-            record_type=$(echo "$record" | jq -r '.type')
-            record_name=$(echo "$record" | jq -r '.name')
-            record_content=$(echo "$record" | jq -r '.content')
-            record_proxied=$(echo "$record" | jq -r '.proxied')
-            record_ttl=$(echo "$record" | jq -r '.ttl')
+            record_id=$(jq -r '.id' <<< "$record")
+            record_type=$(jq -r '.type' <<< "$record")
+            record_name=$(jq -r '.name' <<< "$record")
+            record_content=$(jq -r '.content' <<< "$record")
+            record_proxied=$(jq -r '.proxied' <<< "$record")
+            record_ttl=$(jq -r '.ttl' <<< "$record")
 
             # Create/Update record
             if ! curl -s -X PUT "https://api.cloudflare.com/client/v4/zones/$zoneid/dns_records/$record_id" \
@@ -690,8 +704,8 @@ update_dns_record() {
         log "==> Created new DNS $type Record for $record with IP: $ip, ttl: $ttl, proxied: $proxied"
 
         # Invalidate cache after creating new record
-        dns_records_cache[$cache_key]=""
-        dns_records_cache_time[$cache_key]=""
+        unset dns_records_cache["$cache_key"]
+        unset dns_records_cache_time["$cache_key"]
 
         # Telegram notification
         if [ "${notify_telegram:-no}" == "yes" ]; then
@@ -751,8 +765,8 @@ update_dns_record() {
     log "==> $record DNS $type Record updated to: $ip, ttl: $ttl, proxied: $proxied"
 
     # Invalidate cache after update
-    dns_records_cache[$cache_key]=""
-    dns_records_cache_time[$cache_key]=""
+    unset dns_records_cache["$cache_key"]
+    unset dns_records_cache_time["$cache_key"]
 
     # Telegram notification
     if [ "${notify_telegram:-no}" == "yes" ]; then
