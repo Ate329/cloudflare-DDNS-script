@@ -30,6 +30,44 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 SCRIPT_PATH="${BASH_SOURCE[0]}"
 cd "$SCRIPT_DIR"
 
+## Migrate old configuration file if it exists
+if [ -f "cloudflare-dns-update.conf" ]; then
+    log_info "Migrating old configuration file from cloudflare-dns-update.conf to cloudflare-dns-update.json..."
+    # Source the old .conf file to load the variables
+    source "cloudflare-dns-update.conf"
+
+    # Create the new JSON configuration file.
+    cat > cloudflare-dns-update.json <<EOF
+{
+  "domain_configs": "$(echo "$domain_configs" | sed 's/"/\\"/g')",
+  "cloudflare_zone_api_token": "$(echo "$cloudflare_zone_api_token" | sed 's/"/\\"/g')",
+  "enable_ipv6": "$(echo "$enable_ipv6" | sed 's/"/\\"/g')",
+  "use_same_record_for_ipv6": "$(echo "$use_same_record_for_ipv6" | sed 's/"/\\"/g')",
+  "dns_record_ipv6": "$(echo "$dns_record_ipv6" | sed 's/"/\\"/g')",
+  "ttl": $ttl,
+  "proxied": $(if [ "$proxied" = "true" ]; then echo "true"; else echo "false"; fi),
+  "auto_create_records": "$(echo "$auto_create_records" | sed 's/"/\\"/g')",
+  "max_dns_backups": $max_dns_backups,
+  "max_retries": $max_retries,
+  "retry_delay": $retry_delay,
+  "max_retry_delay": $max_retry_delay,
+  "log_cleanup_days": $log_cleanup_days,
+  "max_update_backups": $max_update_backups,
+  "notify_telegram": "$(echo "$notify_telegram" | sed 's/"/\\"/g')",
+  "telegram_bot_token": "$(echo "$telegram_bot_token" | sed 's/"/\\"/g')",
+  "telegram_chat_id": "$(echo "$telegram_chat_id" | sed 's/"/\\"/g')"
+}
+EOF
+
+    if [ $? -eq 0 ]; then
+        log_info "Migration successful. Removing old configuration file."
+        rm -f cloudflare-dns-update.conf
+    else
+        log_error "Migration of configuration file failed."
+        exit 1
+    fi
+fi
+
 # Create temporary directory for script update
 TEMP_UPDATE_DIR=$(mktemp -d) || {
     log_error "Failed to create temporary directory for update"
@@ -198,6 +236,36 @@ add_temp_file() {
     if [[ ! " ${TEMP_FILES[@]} " =~ " $1 " ]]; then
         TEMP_FILES+=("$1")
     fi
+}
+
+# Function to cleanup old backups
+cleanup_old_backups() {
+    local default_max_backups=10  # Default to keep last 10 backups
+    local max_backups
+
+    # Try to get max_update_backups from the JSON config, otherwise use default
+    if [ -f cloudflare-dns-update.json ]; then
+         max_backups=$(jq -r '.max_update_backups // empty' cloudflare-dns-update.json)
+         if ! [[ "$max_backups" =~ ^[1-9][0-9]*$ ]]; then
+             log_warn "Invalid or missing 'max_update_backups' in config. Using default value: $default_max_backups"
+             max_backups=$default_max_backups 
+         fi
+    else
+         max_backups=$default_max_backups
+    fi
+
+    local backup_dirs
+    backup_dirs=$(find "${SCRIPT_DIR}/backups/" -maxdepth 1 -type d -name "[0-9]*_*" 2>/dev/null) || return 0
+    local backup_count
+    backup_count=$(echo "$backup_dirs" | wc -l)
+
+    if [ "$backup_count" -gt "$max_backups" ]; then
+        log_info "Cleaning up old backups (keeping last $max_backups)..."
+        echo "$backup_dirs" | sort | head -n -${max_backups} | while read -r dir; do
+            [ -d "$dir" ] && rm -rf "$dir"
+        done
+    fi
+    return 0
 }
 
 # Function to create backup
