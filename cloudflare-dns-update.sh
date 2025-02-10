@@ -386,11 +386,30 @@ touch "$LOG_FILE"
 log "==> Script started"
 
 ### Validate config file
-config_file="${config_override:-${1:-${parent_path}/cloudflare-dns-update.conf}}"
-if ! source "$config_file"; then
-    log "Error! Missing configuration file $config_file or invalid syntax!"
+config_file="${config_override:-${1:-${parent_path}/cloudflare-dns-update.json}}"
+if [ ! -f "$config_file" ]; then
+    log "Error! Configuration file $config_file not found!"
     exit 1
 fi
+
+# Load JSON configuration values using jq
+domain_configs=$(jq -r '.domain_configs' "$config_file")
+cloudflare_zone_api_token=$(jq -r '.cloudflare_zone_api_token' "$config_file")
+enable_ipv6=$(jq -r '.enable_ipv6' "$config_file")
+use_same_record_for_ipv6=$(jq -r '.use_same_record_for_ipv6' "$config_file")
+dns_record_ipv6=$(jq -r '.dns_record_ipv6' "$config_file")
+ttl=$(jq -r '.ttl' "$config_file")
+proxied=$(jq -r '.proxied' "$config_file")
+auto_create_records=$(jq -r '.auto_create_records' "$config_file")
+max_dns_backups=$(jq -r '.max_dns_backups' "$config_file")
+max_retries=$(jq -r '.max_retries' "$config_file")
+retry_delay=$(jq -r '.retry_delay' "$config_file")
+max_retry_delay=$(jq -r '.max_retry_delay' "$config_file")
+log_cleanup_days=$(jq -r '.log_cleanup_days' "$config_file")
+max_update_backups=$(jq -r '.max_update_backups' "$config_file")
+notify_telegram=$(jq -r '.notify_telegram' "$config_file")
+telegram_bot_token=$(jq -r '.telegram_bot_token' "$config_file")
+telegram_chat_id=$(jq -r '.telegram_chat_id' "$config_file")
 
 # Apply command line overrides
 [ -n "$domains_override" ] && domain_configs="$domains_override"

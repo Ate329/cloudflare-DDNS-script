@@ -1,0 +1,19 @@
+{
+  "domain_configs": "your_cloudflare_zone_id1:example1.com,sub1.example1.com;your_cloudflare_zone_id2:example2.com,sub2.example2.com",
+  "cloudflare_zone_api_token": "your_cloudflare_api_token",
+  "enable_ipv6": "no",
+  "use_same_record_for_ipv6": "yes",
+  "dns_record_ipv6": "",
+  "ttl": 1,
+  "proxied": false,
+  "auto_create_records": "yes",
+  "max_dns_backups": 10,
+  "max_retries": 3,
+  "retry_delay": 5,
+  "max_retry_delay": 60,
+  "log_cleanup_days": 7,
+  "max_update_backups": 10,
+  "notify_telegram": "no",
+  "telegram_bot_token": "your_telegram_bot_token",
+  "telegram_chat_id": "your_telegram_chat_id"
+} 

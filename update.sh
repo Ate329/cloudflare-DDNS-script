@@ -204,7 +204,7 @@ add_temp_file() {
 create_backup() {
     log_info "Creating backup of current configuration..."
     local failed=0
-    local files_to_backup=("cloudflare-dns-update.conf" "cloudflare-dns-update.log" "$SCRIPT_PATH")
+    local files_to_backup=("cloudflare-dns-update.json" "cloudflare-dns-update.log" "$SCRIPT_PATH")
     
     for file in "${files_to_backup[@]}"; do
         if [ -f "$file" ]; then
@@ -227,9 +227,9 @@ restore_from_backup() {
     local failed=0
 
     log_info "Restoring from backup: $backup_dir"
-    if [ -f "$backup_dir/cloudflare-dns-update.conf" ]; then
-        cp -p "$backup_dir/cloudflare-dns-update.conf" ./cloudflare-dns-update.conf || {
-            log_error "Failed to restore 'cloudflare-dns-update.conf' from backup."
+    if [ -f "$backup_dir/cloudflare-dns-update.json" ]; then
+        cp -p "$backup_dir/cloudflare-dns-update.json" ./cloudflare-dns-update.json || {
+            log_error "Failed to restore 'cloudflare-dns-update.json' from backup."
             failed=1
         }
     fi
@@ -268,197 +268,6 @@ restore_from_backup() {
         return 1
     fi
     log_info "Backup restored successfully from: $backup_dir"
-    return 0
-}
-
-# Function to extract configuration value
-get_config_value() {
-    local config_file=$1
-    local key=$2
-    local value
-    value=$(grep "^${key}=" "$config_file" 2>/dev/null | cut -d'=' -f2- | tr -d '"' || echo "")
-    echo "$value"
-    return 0
-}
-
-# Function to merge configurations
-merge_configs() {
-    local user_config=$1
-    local new_config=$2
-    local temp_file
-    local has_new_options=false
-    
-    # Required sections in order
-    declare -a SECTIONS=(
-        "Domain configurations"
-        "Global settings"
-        "Error handling settings"
-        "Log settings"
-        "Update script settings"
-        "Telegram notification settings"
-    )
-    
-    # Verify input files
-    if [ ! -f "$user_config" ] || [ ! -r "$user_config" ]; then
-        log_error "Merge failed: Cannot read user config '$user_config'"
-        return 1
-    fi
-    if [ ! -f "$new_config" ] || [ ! -r "$new_config" ]; then
-        log_error "Merge failed: Cannot read new config '$new_config'"
-        return 1
-    fi
-    
-    # Create temporary file
-    temp_file=$(mktemp)
-    add_temp_file "$temp_file"
-    
-    # Read user's current settings into associative array
-    declare -A user_settings
-    declare -A user_comments
-    declare -A seen_sections
-    local current_section=""
-    local last_comment=""
-    
-    while IFS= read -r line || [ -n "$line" ]; do
-        # Handle comments
-        if [[ "$line" =~ ^[[:space:]]*#.*$ ]]; then
-            [ -n "$last_comment" ] && last_comment+=$'\n'
-            last_comment+="$line"
-            continue
-        fi
-        
-        # Handle section headers
-        if [[ "$line" =~ ^###[[:space:]]*(.*)[[:space:]]*$ ]]; then
-            current_section="${BASH_REMATCH[1]}"
-            seen_sections["$current_section"]=1
-            [ -n "$last_comment" ] && user_comments["section_$current_section"]="$last_comment"
-            last_comment=""
-            continue
-        fi
-        
-        # Handle settings
-        if [[ "$line" =~ ^([A-Za-z_][A-Za-z0-9_]*)=(.*)$ ]]; then
-            local key="${BASH_REMATCH[1]}"
-            local value="${BASH_REMATCH[2]}"
-            user_settings["$key"]="$value"
-            [ -n "$last_comment" ] && user_comments["setting_$key"]="$last_comment"
-            last_comment=""
-            continue
-        fi
-        
-        # Handle empty lines
-        if [[ -z "$line" ]]; then
-            last_comment=""
-        fi
-    done < "$user_config"
-    
-    # Process the new config file and create merged output
-    current_section=""
-    last_comment=""
-    local first_section=true
-    
-    while IFS= read -r line || [ -n "$line" ]; do
-        # Handle comments
-        if [[ "$line" =~ ^[[:space:]]*#.*$ ]]; then
-            [ -n "$last_comment" ] && last_comment+=$'\n'
-            last_comment+="$line"
-            continue
-        fi
-        
-        # Handle section headers
-        if [[ "$line" =~ ^###[[:space:]]*(.*)[[:space:]]*$ ]]; then
-            current_section="${BASH_REMATCH[1]}"
-            # Add newline before sections (except first)
-            [ "$first_section" = true ] || echo "" >> "$temp_file"
-            first_section=false
-            
-            # Only output section header and comments once
-            if [ -n "${user_comments["section_$current_section"]:-}" ]; then
-                echo "${user_comments["section_$current_section"]}" >> "$temp_file"
-            elif [ -n "$last_comment" ]; then
-                echo "$last_comment" >> "$temp_file"
-            fi
-            echo "$line" >> "$temp_file"
-            last_comment=""
-            continue
-        fi
-        
-        # Handle settings
-        if [[ "$line" =~ ^([A-Za-z_][A-Za-z0-9_]*)=(.*)$ ]]; then
-            local key="${BASH_REMATCH[1]}"
-            local template_value="${BASH_REMATCH[2]}"
-            
-            # If user has this setting, use their value and comment
-            if [ -n "${user_settings[$key]:-}" ]; then
-                [ -n "${user_comments["setting_$key"]:-}" ] && echo "${user_comments["setting_$key"]}" >> "$temp_file"
-                echo "$key=${user_settings[$key]}" >> "$temp_file"
-            else
-                # This is a new option
-                has_new_options=true
-                [ -n "$last_comment" ] && echo "$last_comment" >> "$temp_file"
-                echo "$key=$template_value" >> "$temp_file"
-                log_warn "New option found: $key in section: $current_section"
-            fi
-            last_comment=""
-            continue
-        fi
-        
-        # Handle empty lines
-        if [[ -z "$line" ]]; then
-            echo "$line" >> "$temp_file"
-            last_comment=""
-            continue
-        fi
-    done < "$new_config"
-    
-    # If we have new options, create a .new file for review and update the original
-    if [ "$has_new_options" = true ]; then
-        log_info "New configuration options have been added to your config file"
-        if ! mv "$temp_file" "$user_config"; then
-            log_error "Failed to apply merged configuration"
-            rm -f "$temp_file"
-            return 1
-        fi
-        return 0
-    else
-        log_info "No new configuration options found"
-        rm -f "$temp_file"
-        return 0
-    fi
-}
-
-# Function to cleanup old backups
-cleanup_old_backups() {
-    local default_max_backups=10  # Default to keep last 10 backups
-    local max_backups
-
-    # Try to get max_backups from config file, use default if not found or invalid
-    if [ -f cloudflare-dns-update.conf ]; then
-        max_backups=$(get_config_value cloudflare-dns-update.conf "max_update_backups")
-        # If empty, not a number, or not a positive integer, use default
-        if ! [[ "$max_backups" =~ ^[1-9][0-9]*$ ]]; then
-            log_warn "Invalid or missing 'max_update_backups' in config. Using default value: $default_max_backups"
-            max_backups=$default_max_backups
-        fi
-    else
-        max_backups=$default_max_backups
-    fi
-
-    local backup_count
-    local backup_dirs
-
-    # Only count directories that match our timestamp pattern
-    backup_dirs=$(find "${SCRIPT_DIR}/backups/" -maxdepth 1 -type d -name "[0-9]*_*" 2>/dev/null) || return 0
-    backup_count=$(echo "$backup_dirs" | wc -l)
-
-    if [ "$backup_count" -gt "$max_backups" ]; then
-        log_info "Cleaning up old backups (keeping last $max_backups)..."
-        echo "$backup_dirs" | xargs -d '\n' stat --format '%Y %n' 2>/dev/null | \
-            sort -n | head -n -${max_backups} | cut -d' ' -f2- | \
-            while read -r dir; do
-                [ -d "$dir" ] && rm -rf "$dir"
-            done
-    fi
     return 0
 }
 
@@ -521,36 +330,31 @@ check_main_branch
 COMMITS_BEHIND=$(git rev-list HEAD..origin/main --count)
 if [ "$COMMITS_BEHIND" -eq 0 ]; then
     # Even if there are no git updates, we should check if the config needs updating
-    if [ -f cloudflare-dns-update.conf ]; then
+    if [ -f cloudflare-dns-update.json ]; then
         log_info "Checking if configuration needs updating..."
-        # Get the template config from the repository
-        if ! git show "origin/main:cloudflare-dns-update.conf" > "cloudflare-dns-update.conf.template"; then
+        if ! git show "origin/main:cloudflare-dns-update.json" > "cloudflare-dns-update.json.template"; then
             log_error "Failed to get template configuration"
             exit 1
         fi
-        add_temp_file "cloudflare-dns-update.conf.template"
+        add_temp_file "cloudflare-dns-update.json.template"
 
-        # Create a backup before attempting merge
         if ! create_backup; then
             log_error "Failed to create backup before config merge"
             exit 1
         fi
 
-        # Try merging to see if there are differences
-        if merge_configs cloudflare-dns-update.conf cloudflare-dns-update.conf.template; then
-            log_info "Configuration is up to date."
+        # Merge the template and user configuration using jq.
+        merged_config=$(jq -s '.[0] * .[1]' "cloudflare-dns-update.json.template" "cloudflare-dns-update.json") || {
+            log_error "Failed to merge configuration files"
+            exit 1
+        }
+
+        # If there are changes, update the user's config file.
+        if ! diff -q <(jq . "cloudflare-dns-update.json") <(echo "$merged_config") >/dev/null; then
+            echo "$merged_config" > cloudflare-dns-update.json
+            log_warn "New configuration options have been added to cloudflare-dns-update.json."
         else
-            log_warn "Configuration file needs updating despite no git changes."
-            # Restore from backup and try merge again
-            if ! restore_from_backup "$BACKUP_DIR"; then
-                log_error "Failed to restore from backup after merge failure"
-                exit 1
-            fi
-            # Attempt merge again with restored config
-            if ! merge_configs cloudflare-dns-update.conf cloudflare-dns-update.conf.template; then
-                log_error "Failed to merge configuration files after restore"
-                exit 1
-            fi
+            log_info "Configuration is up to date."
         fi
     fi
     log_info "Already up to date."
@@ -570,24 +374,24 @@ if ! git pull origin main; then
 fi
 
 # Handle configuration updates
-if [ -f "$BACKUP_DIR/cloudflare-dns-update.conf" ] && [ -f cloudflare-dns-update.conf ]; then
+if [ -f "$BACKUP_DIR/cloudflare-dns-update.json" ] && [ -f cloudflare-dns-update.json ]; then
     log_info "Checking for new configuration options..."
-    if ! verify_file cloudflare-dns-update.conf; then
+    if ! verify_file cloudflare-dns-update.json; then
         log_error "New configuration file is invalid"
         restore_from_backup "$BACKUP_DIR"
         exit 1
     fi
 
     # Get the template config from the repository
-    if ! git show "origin/main:cloudflare-dns-update.conf" > "cloudflare-dns-update.conf.template"; then
+    if ! git show "origin/main:cloudflare-dns-update.json" > "cloudflare-dns-update.json.template"; then
         log_error "Failed to get template configuration"
         restore_from_backup "$BACKUP_DIR"
         exit 1
     fi
-    add_temp_file "cloudflare-dns-update.conf.template"
+    add_temp_file "cloudflare-dns-update.json.template"
 
     # Restore user's config for merging
-    cp "$BACKUP_DIR/cloudflare-dns-update.conf" ./cloudflare-dns-update.conf || {
+    cp "$BACKUP_DIR/cloudflare-dns-update.json" ./cloudflare-dns-update.json || {
         log_error "Failed to restore backup configuration for merging."
         restore_from_backup "$BACKUP_DIR"
         exit 1
@@ -603,14 +407,14 @@ if [ -f "$BACKUP_DIR/cloudflare-dns-update.conf" ] && [ -f cloudflare-dns-update
     fi
 
     # Merge configurations using the template
-    if ! merge_configs cloudflare-dns-update.conf cloudflare-dns-update.conf.template; then
+    if ! merge_configs cloudflare-dns-update.json cloudflare-dns-update.json.template; then
         log_error "Failed to merge configuration files"
         restore_from_backup "$BACKUP_DIR"
         exit 1
     fi
 
     # Final verification of merged configuration
-    if ! verify_file cloudflare-dns-update.conf; then
+    if ! verify_file cloudflare-dns-update.json; then
         log_error "Merged configuration file is invalid"
         restore_from_backup "$BACKUP_DIR"
         exit 1
