@@ -43,7 +43,7 @@ cloudflare-DDNS-script is a Bash script that automatically updates Cloudflare DN
 
 ## Updating
 
-The script includes a robust update mechanism that preserves your configuration while safely adding any new options. To update to the latest version:
+The script includes a robust update mechanism that preserves your configuration while safely adding any new options. Repo-owned scripts are refreshed from the repository on every update, and any local edits to those scripts are backed up and overwritten after a warning. To update to the latest version:
 
 1. Simply run:
    ```bash
@@ -51,10 +51,11 @@ The script includes a robust update mechanism that preserves your configuration 
    ```
 
 The update script will:
-- Create a timestamped backup of your current configuration, log files, and the update script itself
+- Create a timestamped backup of your current configuration, log files, and repo-owned scripts
 - Maintain a configurable history of backups (default: 10) for safety
 - Check if you're in a git repository and on the main branch
-- Check for any local changes and offer to stash them safely
+- Warn if local edits to `update.sh` or `cloudflare-dns-update.sh` will be overwritten
+- Check for any non-script local changes and offer to stash them safely
 - Verify the git repository and remote configuration
 - Check if the update script itself needs updating (and if so, update it first)
 - Pull the latest changes from the repository
@@ -72,7 +73,8 @@ The update script will:
 The update process includes several safety measures:
 - All operations are atomic (they either complete fully or not at all)
 - File permissions are preserved during backup and restore
-- Stashed changes are automatically restored even if the script is interrupted
+- Repo-owned scripts are backed up before local edits are overwritten
+- Stashed non-script changes are automatically restored even if the script is interrupted
 - File integrity is verified at multiple steps
 - Backup directory names include timestamps and process IDs to prevent conflicts
 - The update script updates itself first to ensure the latest update logic is used
@@ -90,6 +92,7 @@ backups/
 ├── YYYYMMDD_HHMMSS_PID/  (most recent)
 │   ├── cloudflare-dns-update.conf
 │   ├── cloudflare-dns-update.log
+│   ├── cloudflare-dns-update.sh
 │   └── update.sh
 ├── YYYYMMDD_HHMMSS_PID/  (previous)
 │   └── ...
@@ -126,9 +129,9 @@ Common issues and solutions:
    - Solution: Make sure the script is executable: `chmod +x update.sh`
 
 3. **Local Changes Conflict**
-   - Issue: You have local changes that conflict with updates
-   - Solution: Either commit your changes or allow the script to stash them
-   - Note: Stashed changes will be automatically restored after the update
+    - Issue: You have local changes that conflict with updates
+    - Solution: Non-script changes can be temporarily stashed and restored automatically
+    - Note: Local edits to `update.sh` and `cloudflare-dns-update.sh` are backed up, warned about, and then overwritten by the repository version
 
 4. **Configuration Merge Issues**
    - Issue: New configuration options or sections not appearing correctly
@@ -230,7 +233,7 @@ services.cron = {
 | `-t, --token STRING` | Override Cloudflare API token |
 | `-6, --ipv6 yes/no` | Enable/disable IPv6 support |
 | `-p, --proxy true/false` | Enable/disable Cloudflare proxy |
-| `-l, --ttl NUMBER` | Set TTL (1 or 120-7200) |
+| `-l, --ttl NUMBER` | Set TTL (1 or 30-86400; 30 is Enterprise-only) |
 | `--backup` | Backup current DNS records and update DNS records |
 | `--backup-only` | Backup current DNS records without updating DNS records |
 | `--restore FILE` | Restore DNS records from backup file |
@@ -244,19 +247,20 @@ The script provides two types of backup operations:
    ```bash
    ./cloudflare-dns-update.sh --backup
    ```
-   This will:
-   - Update your DNS records first
-   - Create a backup of your DNS records after the update
-   - Store the backup in the `dns_backups` directory
+    This will:
+    - Update your DNS records first
+    - Create a backup of your DNS records after the update
+    - Store the backup in the `dns_backups` directory
+    - Save records per configured Cloudflare zone in JSON format
 
 2. **Backup Only (`--backup-only`)**:
    ```bash
    ./cloudflare-dns-update.sh --backup-only
    ```
-   This will:
-   - Only create a backup of your current DNS records
-   - Skip any DNS record updates
-   - Store the backup in the `dns_backups` directory
+    This will:
+    - Only create a backup of your current DNS records
+    - Skip any DNS record updates
+    - Store the backup in the `dns_backups` directory
 
 3. **Restore from Backup**:
    ```bash
@@ -266,6 +270,7 @@ The script provides two types of backup operations:
    # Or using absolute/custom path
    ./cloudflare-dns-update.sh --restore /path/to/backup/dns_backup_20240101_120000.json
    ```
+   This restore mode will create missing records, update existing backed-up records only when they differ, and will not delete any extra live DNS records that are not present in the backup.
 
 Backups are automatically managed:
 - Old backups are cleaned up based on the `max_dns_backups` setting
@@ -290,7 +295,7 @@ cloudflare_zone_api_token="your_cloudflare_api_token"
 enable_ipv6="no"  # Set to "yes" to enable IPv6 updates
 use_same_record_for_ipv6="yes"  # Set to "no" to use different records for IPv6
 dns_record_ipv6=""  # Only used if use_same_record_for_ipv6 is set to "no"
-ttl=1  # Or any value between 120 and 7200 (1 for automatic)
+ttl=1  # Or any value between 30 and 86400 (30 is Enterprise-only; 1 for automatic)
 proxied=false  # Or true
 auto_create_records="yes"  # Set to "no" to skip creating non-existent records
 max_dns_backups=10  # Number of DNS record backups to keep (default: 10)
@@ -332,10 +337,10 @@ This is where you can get your API Tokens: https://dash.cloudflare.com/profile/a
 ### Configuration Tips
 
 1. **API Token Permissions**
-   - The API token needs the following permissions:
-     - Zone:Read (for listing zones)
-     - DNS:Edit (for managing DNS records)
-   - Create a custom token with these specific permissions for better security
+    - The API token needs the following permissions:
+      - Zone:Read (for listing zones)
+      - DNS:Edit (for managing DNS records)
+    - Create a custom token with these specific permissions for better security, or start from Cloudflare's `Edit zone DNS` token template and scope it to the zones you want to manage
 
 2. **IPv6 Configuration**
    - Enable IPv6 only if your network supports it
@@ -343,9 +348,10 @@ This is where you can get your API Tokens: https://dash.cloudflare.com/profile/a
    - For different IPv6 records, specify the record name in `dns_record_ipv6`
 
 3. **TTL Settings**
-   - Use `ttl=1` for automatic TTL management by Cloudflare
-   - For custom TTL, use values between 120 and 7200 seconds
-   - Lower TTL values mean faster propagation but more DNS queries
+    - Use `ttl=1` for automatic TTL management by Cloudflare
+    - For custom TTL, use values between 60 and 86400 seconds on most zones
+    - Enterprise zones may allow TTL values down to 30 seconds
+    - Lower TTL values mean faster propagation but more DNS queries
 
 4. **Proxy Settings**
    - Set `proxied=true` to enable Cloudflare's proxy features (recommended)
@@ -356,11 +362,12 @@ This is where you can get your API Tokens: https://dash.cloudflare.com/profile/a
    - Two types of backups are maintained in separate directories:
      - Update script backups: in `./backups/`, controlled by `max_update_backups`
      - DNS record backups: in `./dns_backups/`, controlled by `max_dns_backups`
-   - DNS backups are stored in JSON format with timestamps
-   - Each DNS backup includes all DNS records for configured domains
-   - Backups are automatically cleaned up based on these settings
-   - DNS backups can be restored using the `--restore` option
-   - When restoring, you can use either the filename (looks in `dns_backups/`) or full path
+    - DNS backups are stored in JSON format with timestamps
+    - Each DNS backup includes all DNS records for the configured zones
+    - Backups are automatically cleaned up based on these settings
+    - DNS backups can be restored using the `--restore` option
+    - When restoring, you can use either the filename (looks in `dns_backups/`) or full path
+    - Restore updates or recreates backed-up records, but leaves unrelated live records untouched
 
 6. **Log Management**
    - Set `log_cleanup_days` to control log retention
@@ -368,9 +375,10 @@ This is where you can get your API Tokens: https://dash.cloudflare.com/profile/a
    - Logs include detailed API responses for troubleshooting
 
 7. **Error Handling**
-   - Adjust retry settings based on your network reliability
-   - `max_retries` controls how many times to retry failed operations
-   - Retry delay increases exponentially up to `max_retry_delay`
+    - Adjust retry settings based on your network reliability
+    - `max_retries` controls how many times to retry failed IP lookups and Cloudflare API calls
+    - Retry delay increases exponentially up to `max_retry_delay`
+    - Cloudflare rate-limit responses (`429`) respect the API's `Retry-After` header when present
 
 ## Logging
 
