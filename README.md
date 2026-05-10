@@ -82,7 +82,7 @@ Use this format:
 zone_id:record1,record2;another_zone_id:record3,record4
 ```
 
-Each zone ID must be the 32-character Cloudflare Zone ID. Each record should be the full DNS name to update, such as `example.com` or `home.example.com`.
+Each zone ID must be the 32-character Cloudflare Zone ID. Each record should be the full DNS name to update, such as `example.com`, `home.example.com`, or a leftmost wildcard like `*.example.com`.
 
 ### Global Settings
 
