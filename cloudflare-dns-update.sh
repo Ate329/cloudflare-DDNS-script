@@ -849,8 +849,8 @@ log "==> IPv6 enabled: $ipv6_enabled"
 readonly IPV4_REGEX='^([0-9]{1,3}\.){3}[0-9]{1,3}$'
 readonly IPV6_REGEX='^([0-9a-fA-F]{0,4}:){1,7}[0-9a-fA-F]{0,4}$'
 
-### Valid domain name regex (basic validation)
-readonly DOMAIN_REGEX='^([a-zA-Z0-9]([-a-zA-Z0-9]*[a-zA-Z0-9])?\.)+[a-zA-Z]{2,}$'
+### Valid domain name regex (basic validation, including leftmost wildcards)
+readonly DOMAIN_REGEX='^(\*\.)?([a-zA-Z0-9]([-a-zA-Z0-9]*[a-zA-Z0-9])?\.)+[a-zA-Z]{2,}$'
 
 ### Function to validate domain name
 validate_domain() {

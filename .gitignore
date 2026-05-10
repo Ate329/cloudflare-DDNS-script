@@ -2,4 +2,3 @@ cloudflare-dns-update_test.conf
 cloudflare-dns-update.log
 dns_backups/
 backups/
-.update.sh.reexec
