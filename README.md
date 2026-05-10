@@ -2,6 +2,24 @@
 
 `cloudflare-DDNS-script` is a Bash script that keeps Cloudflare DNS records pointed at your current public IP address. It supports IPv4 `A` records, optional IPv6 `AAAA` records, multiple zones, DNS record backups, restore, retries, logging, and optional Telegram notifications.
 
+> [!NOTE]
+> The old `update.sh` helper has been removed. Update this repository with `git pull`; see [Updating This Repository](#updating-this-repository) for the recommended steps.
+
+## Table Of Contents
+
+- [Features](#features)
+- [Requirements](#requirements)
+- [Cloudflare API Token](#cloudflare-api-token)
+- [Installation](#installation)
+- [Configuration](#configuration)
+- [Usage](#usage)
+- [DNS Backups](#dns-backups)
+- [Scheduled Runs](#scheduled-runs)
+- [Updating This Repository](#updating-this-repository)
+- [Troubleshooting](#troubleshooting)
+- [Security Notes](#security-notes)
+- [License](#license)
+
 ## Features
 
 - Updates Cloudflare `A` records with your current public IPv4 address
