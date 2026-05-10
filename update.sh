@@ -26,88 +26,9 @@ if ! command -v git &> /dev/null; then
 fi
 
 # Save current directory and script path
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-SCRIPT_PATH="${BASH_SOURCE[0]}"
+SCRIPT_DIR="${SCRIPT_DIR_OVERRIDE:-$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)}"
+SCRIPT_PATH="${SCRIPT_PATH_OVERRIDE:-${BASH_SOURCE[0]}}"
 cd "$SCRIPT_DIR"
-
-# Create temporary directory for script update
-TEMP_UPDATE_DIR=$(mktemp -d) || {
-    log_error "Failed to create temporary directory for update"
-    exit 1
-}
-
-# Cleanup temporary files on exit
-cleanup_temp() {
-    set +e
-    [ -d "$TEMP_UPDATE_DIR" ] && rm -rf "$TEMP_UPDATE_DIR"
-}
-trap cleanup_temp EXIT
-
-# Check if we're in a git repository
-if ! git rev-parse --is-inside-work-tree > /dev/null 2>&1; then
-    log_error "Not in a git repository. Please run this script from the project directory."
-    exit 1
-fi
-
-# Verify remote exists
-if ! git remote get-url origin >/dev/null 2>&1; then
-    log_error "No 'origin' remote found. Please ensure the repository is properly configured."
-    exit 1
-fi
-
-# Fetch updates once at the beginning
-log_info "Checking for updates..."
-if ! git fetch origin main; then
-    log_error "Failed to fetch updates. Please check your internet connection."
-    exit 1
-fi
-
-# Check if update.sh needs updating (do this before any other operations)
-if git diff --name-only HEAD..origin/main | grep -q "^update.sh$"; then
-    log_info "Update script needs updating. Updating it first..."
-    
-    # Get the new version in a temporary location first
-    if ! git show origin/main:update.sh > "$TEMP_UPDATE_DIR/update.sh"; then
-        log_error "Failed to get new update script"
-        exit 1
-    fi
-    
-    # Verify the new script
-    if ! bash -n "$TEMP_UPDATE_DIR/update.sh"; then
-        log_error "New update script contains syntax errors"
-        exit 1
-    fi
-    
-    # Make the new script executable
-    chmod +x "$TEMP_UPDATE_DIR/update.sh"
-    
-    # Replace the old script with the new one atomically
-    if ! mv "$TEMP_UPDATE_DIR/update.sh" "$SCRIPT_PATH"; then
-        log_error "Failed to replace update script"
-        exit 1
-    fi
-    
-    # Stage the updated update.sh file
-    git add update.sh
-    
-    log_info "Update script has been updated. Proceeding with remaining updates..."
-    
-    # Prevent infinite recursion by checking an environment variable
-    if [ -z "${REEXECED:-}" ]; then
-        export REEXECED=1
-        exec bash "$SCRIPT_PATH"
-    fi
-fi
-
-# Temporary files cleanup
-declare -a TEMP_FILES=()
-cleanup_temp_files() {
-    if [ ${#TEMP_FILES[@]} -gt 0 ]; then
-        for file in "${TEMP_FILES[@]}"; do
-            [ -f "$file" ] && rm -f "$file"
-        done
-    fi
-}
 
 # Create backup directory with timestamp and pid for uniqueness
 if [ ! -d "${SCRIPT_DIR}/backups" ]; then
@@ -122,59 +43,206 @@ BACKUP_DIR=$(mktemp -d "${SCRIPT_DIR}/backups/$(date +%Y%m%d_%H%M%S)_XXXXXX") ||
     exit 1
 }
 
+# Create temporary directory for script update
+TEMP_UPDATE_DIR=$(mktemp -d) || {
+    log_error "Failed to create temporary directory for update"
+    exit 1
+}
+
+# Cleanup temporary files on exit
+cleanup_temp() {
+    set +e
+    [ -d "$TEMP_UPDATE_DIR" ] && rm -rf "$TEMP_UPDATE_DIR"
+}
+
+# Function to backup a file once per update run
+backup_file_if_needed() {
+    local file=$1
+    local destination
+
+    [ -f "$file" ] || return 0
+    destination="${BACKUP_DIR}/$(basename "$file")"
+    [ -f "$destination" ] && return 0
+
+    cp -p "$file" "$destination"
+}
+
+# Create an initial safety backup before discarding local script changes
+for file in cloudflare-dns-update.conf cloudflare-dns-update.log "$SCRIPT_PATH" cloudflare-dns-update.sh; do
+    if ! backup_file_if_needed "$file"; then
+        log_error "Failed to create initial backup in: $BACKUP_DIR"
+        exit 1
+    fi
+done
+
+# Check if we're in a git repository
+if ! git rev-parse --is-inside-work-tree > /dev/null 2>&1; then
+    log_error "Not in a git repository. Please run this script from the project directory."
+    exit 1
+fi
+
+# Verify remote exists
+if ! git remote get-url origin >/dev/null 2>&1; then
+    log_error "No 'origin' remote found. Please ensure the repository is properly configured."
+    exit 1
+fi
+
+# Temporary files cleanup
+declare -a TEMP_FILES=()
+if [ -n "${REEXEC_TEMP_SCRIPT:-}" ] && [ -f "${REEXEC_TEMP_SCRIPT}" ]; then
+    TEMP_FILES+=("${REEXEC_TEMP_SCRIPT}")
+fi
+cleanup_temp_files() {
+    if [ ${#TEMP_FILES[@]} -gt 0 ]; then
+        for file in "${TEMP_FILES[@]}"; do
+            [ -f "$file" ] && rm -f "$file"
+        done
+    fi
+}
+
 # Global variable to track if we've already stashed changes
 CHANGES_STASHED=0
+STASH_COMMIT=""
+
+# Function to warn about repo-owned script changes that will be replaced
+warn_repo_owned_script_changes() {
+    local warned=0
+    local file
+
+    for file in "$@"; do
+        if ! git diff --quiet -- "$file" || ! git diff --cached --quiet -- "$file"; then
+            if [ "$warned" -eq 0 ]; then
+                log_warn "Local changes to repo-owned scripts will be overwritten by this update:"
+            fi
+            log_warn "  - $file"
+            warned=1
+        fi
+    done
+
+    if [ "$warned" -eq 1 ]; then
+        log_warn "A backup of your current scripts is available in: $BACKUP_DIR"
+    fi
+}
+
+# Function to discard local changes to repo-owned scripts
+discard_repo_owned_script_changes() {
+    local files_to_restore=()
+    local file
+
+    for file in "$@"; do
+        if ! git diff --quiet -- "$file" || ! git diff --cached --quiet -- "$file"; then
+            files_to_restore+=("$file")
+        fi
+    done
+
+    if [ ${#files_to_restore[@]} -gt 0 ]; then
+        git restore --source=HEAD --staged --worktree -- "${files_to_restore[@]}" || {
+            log_error "Failed to reset local script changes: ${files_to_restore[*]}"
+            exit 1
+        }
+    fi
+}
+
+# Function to detect local changes outside repo-owned scripts
+has_non_repo_owned_changes() {
+    local file
+
+    while IFS= read -r file; do
+        [ -z "$file" ] && continue
+        case "$file" in
+            update.sh|cloudflare-dns-update.sh|cloudflare-dns-update.conf|cloudflare-dns-update.log|.update.sh.reexec|backups/*)
+                ;;
+            *)
+                return 0
+                ;;
+        esac
+    done < <(git diff --name-only; git diff --cached --name-only; git ls-files --others --exclude-standard)
+
+    return 1
+}
+
+# Function to resolve a stash ref from its commit hash
+resolve_stash_ref() {
+    local commit=$1
+    local stash_ref
+    local stash_commit
+
+    while IFS=' ' read -r stash_ref stash_commit; do
+        if [ "$stash_commit" = "$commit" ]; then
+            echo "$stash_ref"
+            return 0
+        fi
+    done < <(git stash list --format='%gd %H')
+
+    return 1
+}
 
 # Function to handle stashing
 handle_local_changes() {
-    # Only stash if we haven't already
-    if [ "$CHANGES_STASHED" -eq 0 ] && { ! git diff --quiet || ! git diff --cached --quiet; }; then
-        # Check if there are changes other than update.sh
-        local has_other_changes=0
-        while IFS= read -r file; do
-            if [ "${file}" != "update.sh" ]; then
-                has_other_changes=1
-                break
-            fi
-        done < <(git diff --name-only; git diff --cached --name-only)
+    local previous_stash_head=""
+    local backup_dir_relative
+    backup_dir_relative="backups/$(basename "$BACKUP_DIR")"
 
-        if [ "$has_other_changes" -eq 1 ]; then
-            log_warn "You have local changes to your configuration"
-            read -p "Do you want to temporarily save these changes and continue? [y/N] " -n 1 -r
-            echo
-            if [[ ! $REPLY =~ ^[Yy]$ ]]; then
-                exit 1
-            fi
-            log_info "Saving your local changes..."
-            
-            # First, reset update.sh if it has changes
-            if git diff --quiet update.sh || git diff --cached --quiet update.sh; then
-                git checkout -- update.sh 2>/dev/null || true
-            fi
-            
-            # Now try to stash other changes
-            if git stash push -- ':!update.sh'; then
-                CHANGES_STASHED=1
-                touch "${BACKUP_DIR}/.stashed"
-            else
-                log_error "Failed to save local changes"
-                exit 1
-            fi
-        fi
+    if [ "$CHANGES_STASHED" -eq 1 ] || ! has_non_repo_owned_changes; then
+        return 0
     fi
+
+    log_warn "You have local non-script changes that can conflict with the update."
+    read -p "Do you want to temporarily save these changes and continue? [y/N] " -n 1 -r
+    echo
+    if [[ ! $REPLY =~ ^[Yy]$ ]]; then
+        exit 1
+    fi
+
+    log_info "Saving your local non-script changes..."
+    previous_stash_head=$(git rev-parse -q --verify refs/stash 2>/dev/null || true)
+
+    if ! git stash push --include-untracked -m "cloudflare-DDNS-script update safety stash" -- . ":(exclude)update.sh" ":(exclude)cloudflare-dns-update.sh" ":(exclude)cloudflare-dns-update.conf" ":(exclude)cloudflare-dns-update.log" ":(exclude).update.sh.reexec" ":(exclude)$backup_dir_relative" ":(exclude)$backup_dir_relative/**" >/dev/null; then
+        log_error "Failed to save local changes"
+        exit 1
+    fi
+
+    STASH_COMMIT=$(git rev-parse -q --verify refs/stash 2>/dev/null || true)
+    if [ -z "$STASH_COMMIT" ] || [ "$STASH_COMMIT" = "$previous_stash_head" ]; then
+        log_info "No non-script changes needed stashing."
+        STASH_COMMIT=""
+        return 0
+    fi
+
+    CHANGES_STASHED=1
+    touch "${BACKUP_DIR}/.stashed"
 }
 
 # Function to restore stashed changes
 restore_stashed_changes() {
+    local stash_ref
+
     if [ "$CHANGES_STASHED" -eq 1 ] && [ -f "${BACKUP_DIR}/.stashed" ] && [ ! -f "${BACKUP_DIR}/.stash_restored" ]; then
         log_info "Restoring your saved local changes..."
-        if git stash pop; then
+
+        if [ -z "$STASH_COMMIT" ]; then
+            log_error "Unable to locate the stash created by this update run."
+            log_info "Please inspect your stash list manually to recover local changes."
+            return 1
+        fi
+
+        if ! stash_ref=$(resolve_stash_ref "$STASH_COMMIT"); then
+            log_error "Unable to locate the stash created by this update run."
+            log_info "Please inspect your stash list manually to recover local changes."
+            return 1
+        fi
+
+        if git stash apply "$stash_ref"; then
             touch "${BACKUP_DIR}/.stash_restored"
             log_info "Your local changes have been restored successfully"
             CHANGES_STASHED=0
+            STASH_COMMIT=""
+            if ! git stash drop "$stash_ref" >/dev/null; then
+                log_warn "Applied your local changes, but could not drop $stash_ref automatically."
+            fi
         else
             log_error "Failed to restore your local changes automatically."
-            log_info "Your changes are saved and can be restored manually with: git stash pop"
+            log_info "Your changes are still saved in $stash_ref and can be restored manually."
             # Restore failed; do not alter CHANGES_STASHED
         fi
     fi
@@ -184,6 +252,7 @@ restore_stashed_changes() {
 cleanup() {
     set +e
     local exit_code=$?
+    cleanup_temp
     cleanup_temp_files
     # Only try to restore stashed changes if they weren't restored already
     if [ "$CHANGES_STASHED" -eq 1 ] && [ ! -f "${BACKUP_DIR}/.stash_restored" ]; then
@@ -195,20 +264,27 @@ trap cleanup EXIT
 
 # Function to add temporary file for cleanup
 add_temp_file() {
-    if [[ ! " ${TEMP_FILES[@]} " =~ " $1 " ]]; then
-        TEMP_FILES+=("$1")
-    fi
+    local temp_file=$1
+    local existing_file
+
+    for existing_file in "${TEMP_FILES[@]}"; do
+        if [ "$existing_file" = "$temp_file" ]; then
+            return 0
+        fi
+    done
+
+    TEMP_FILES+=("$temp_file")
 }
 
 # Function to create backup
 create_backup() {
     log_info "Creating backup of current configuration..."
     local failed=0
-    local files_to_backup=("cloudflare-dns-update.conf" "cloudflare-dns-update.log" "$SCRIPT_PATH")
+    local files_to_backup=("cloudflare-dns-update.conf" "cloudflare-dns-update.log" "$SCRIPT_PATH" "cloudflare-dns-update.sh")
     
     for file in "${files_to_backup[@]}"; do
-        if [ -f "$file" ]; then
-            cp -p "$file" "$BACKUP_DIR/" || failed=1
+        if ! backup_file_if_needed "$file"; then
+            failed=1
         fi
     done
     
@@ -249,6 +325,16 @@ restore_from_backup() {
             failed=1
         }
     fi
+    if [ -f "$backup_dir/cloudflare-dns-update.sh" ]; then
+        cp -p "$backup_dir/cloudflare-dns-update.sh" ./cloudflare-dns-update.sh || {
+            log_error "Failed to restore 'cloudflare-dns-update.sh' from backup."
+            failed=1
+        }
+        chmod +x ./cloudflare-dns-update.sh || {
+            log_error "Failed to set executable permission for 'cloudflare-dns-update.sh' after restoration."
+            failed=1
+        }
+    fi
 
     if [ $failed -eq 1 ]; then
         log_error "One or more files failed to restore from backup."
@@ -259,6 +345,12 @@ restore_from_backup() {
     if [[ "$backup_dir/update.sh" == *.sh ]]; then
         chmod +x ./update.sh || {
             log_error "Failed to set executable permission for 'update.sh'."
+            failed=1
+        }
+    fi
+    if [[ "$backup_dir/cloudflare-dns-update.sh" == *.sh ]]; then
+        chmod +x ./cloudflare-dns-update.sh || {
+            log_error "Failed to set executable permission for 'cloudflare-dns-update.sh'."
             failed=1
         }
     fi
@@ -288,16 +380,6 @@ merge_configs() {
     local temp_file
     local has_new_options=false
     
-    # Required sections in order
-    declare -a SECTIONS=(
-        "Domain configurations"
-        "Global settings"
-        "Error handling settings"
-        "Log settings"
-        "Update script settings"
-        "Telegram notification settings"
-    )
-    
     # Verify input files
     if [ ! -f "$user_config" ] || [ ! -r "$user_config" ]; then
         log_error "Merge failed: Cannot read user config '$user_config'"
@@ -315,7 +397,6 @@ merge_configs() {
     # Read user's current settings into associative array
     declare -A user_settings
     declare -A user_comments
-    declare -A seen_sections
     local current_section=""
     local last_comment=""
     
@@ -330,7 +411,6 @@ merge_configs() {
         # Handle section headers
         if [[ "$line" =~ ^###[[:space:]]*(.*)[[:space:]]*$ ]]; then
             current_section="${BASH_REMATCH[1]}"
-            seen_sections["$current_section"]=1
             [ -n "$last_comment" ] && user_comments["section_$current_section"]="$last_comment"
             last_comment=""
             continue
@@ -454,7 +534,7 @@ cleanup_old_backups() {
     if [ "$backup_count" -gt "$max_backups" ]; then
         log_info "Cleaning up old backups (keeping last $max_backups)..."
         echo "$backup_dirs" | xargs -d '\n' stat --format '%Y %n' 2>/dev/null | \
-            sort -n | head -n -${max_backups} | cut -d' ' -f2- | \
+            sort -n | head -n "-${max_backups}" | cut -d' ' -f2- | \
             while read -r dir; do
                 [ -d "$dir" ] && rm -rf "$dir"
             done
@@ -490,6 +570,56 @@ verify_file() {
     fi
     return 0
 }
+
+# Fetch updates once at the beginning
+log_info "Checking for updates..."
+if ! git fetch origin main; then
+    log_error "Failed to fetch updates. Please check your internet connection."
+    exit 1
+fi
+
+repo_owned_files_to_reset=("cloudflare-dns-update.sh")
+if [ -z "${REEXECED:-}" ]; then
+    repo_owned_files_to_reset=("update.sh" "${repo_owned_files_to_reset[@]}")
+fi
+
+warn_repo_owned_script_changes "${repo_owned_files_to_reset[@]}"
+discard_repo_owned_script_changes "${repo_owned_files_to_reset[@]}"
+
+# Check if update.sh needs updating (do this before any other operations)
+if [ -z "${REEXECED:-}" ] && git diff --name-only HEAD..origin/main | grep -q "^update.sh$"; then
+    local_reexec_script="${SCRIPT_DIR}/.update.sh.reexec"
+    log_info "Update script needs updating. Updating it first..."
+
+    # Get the new version in a temporary location first
+    if ! git show origin/main:update.sh > "$TEMP_UPDATE_DIR/update.sh"; then
+        log_error "Failed to get new update script"
+        exit 1
+    fi
+
+    # Verify the new script
+    if ! bash -n "$TEMP_UPDATE_DIR/update.sh"; then
+        log_error "New update script contains syntax errors"
+        exit 1
+    fi
+
+    # Make the new script executable
+    chmod +x "$TEMP_UPDATE_DIR/update.sh"
+
+    # Re-exec the fetched script from a temporary repo-local path while keeping the worktree clean for git pull.
+    if ! cp "$TEMP_UPDATE_DIR/update.sh" "$local_reexec_script"; then
+        log_error "Failed to prepare temporary update script"
+        exit 1
+    fi
+    chmod +x "$local_reexec_script"
+
+    log_info "Update script has been updated. Proceeding with remaining updates..."
+    export REEXECED=1
+    export SCRIPT_DIR_OVERRIDE="$SCRIPT_DIR"
+    export SCRIPT_PATH_OVERRIDE="$SCRIPT_PATH"
+    export REEXEC_TEMP_SCRIPT="$local_reexec_script"
+    exec bash "$local_reexec_script"
+fi
 
 # Create backup before anything else
 if ! create_backup; then
@@ -592,15 +722,6 @@ if [ -f "$BACKUP_DIR/cloudflare-dns-update.conf" ] && [ -f cloudflare-dns-update
         restore_from_backup "$BACKUP_DIR"
         exit 1
     }
-
-    # Save any local changes to the config file before merging
-    if [ -f "${BACKUP_DIR}/.stashed" ]; then
-        git stash save --keep-index "Temporary save of config changes during update" >/dev/null 2>&1 || {
-            log_error "Failed to stash local configuration changes."
-            restore_from_backup "$BACKUP_DIR"
-            exit 1
-        }
-    fi
 
     # Merge configurations using the template
     if ! merge_configs cloudflare-dns-update.conf cloudflare-dns-update.conf.template; then
